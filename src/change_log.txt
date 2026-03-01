@@ -1,0 +1,554 @@
+Changes since 7.97b
+2017_12_24 -- Major change is doing depth reductions based only on movelist location
+              below a certain depth.  A few other minor changes, tested separately,
+              had little effect but seems simpler, see below.
+
+homanss-imac-2:run homand$ diff ../src/search.cpp ../src/search.cpp~
+1423c1423
+<  if(depth > 8
+---
+>  if(depth > MAX(7,2*sqrt(ts->max_ply)) 
+1653c1653,1654
+<      else if(next->pos.check && (in_pv || prev->pv_node || pos.qchecks[pos.wtm] > 0)  
+---
+>      else if(next->pos.check && (in_pv || prev->pv_node 
+> 				 || pos.qchecks[pos.wtm] > 0)  
+1722,1736c1723,1734
+< 	 depth_mod -= 1; // + int(mi/8); //int(depth/VAR2);	 
+< 	 if(depth < 5) depth_mod -= int(mi/8);
+< 	 else {
+< 	   if(premove_score < alpha-350) depth_mod -= (depth/5);
+< 	   //------------------------------------------------------------------
+< 	   // make another reduction decision based on history or position in move list
+< 	   // --> reduce if this move loses historically (~ 90% fail low history)
+< 	   //------------------------------------------------------------------
+< 	   if(moves.mv[mi].score < -10*depth) {
+< 	     depth_mod -= 1+(depth/12);
+< 	     if(moves.mv[mi].score < -23*depth) {
+< 	       depth_mod -= 1+(depth/8);
+< 	     }
+< 	   } 
+< 	 }
+---
+> 	 depth_mod -= 1;// + int(mi/8)+int(depth/8);	 
+> 	 if(premove_score < alpha-350) depth_mod -= (depth/5);
+> 	 //------------------------------------------------------------------
+> 	 // make another reduction decision based on history or position in move list
+> 	 // --> reduce if this move loses historically (~ 90% fail low history)
+> 	 //------------------------------------------------------------------
+> 	 if(moves.mv[mi].score < -10*depth) {
+> 	   depth_mod -= 1 + (depth/12);
+> 	   if(moves.mv[mi].score < -23*depth) {
+> 	     depth_mod -= 1 + (depth/8);
+> 	   }
+> 	 } 
+1749c1747
+<      if(!in_pv && !prev->pv_node &&
+---
+>      if(!in_pv && //!prev->pv_node &&
+
+2017_09_16 -- Changed back to fail-hard in both hash.cpp and search.cpp to keep things consistent as possible
+              between threads
+2017_08_19 -- Tests show (see below) that doing the same things between threads (depth, null, singular) is
+              better in my implementation than differing these things, at least up to four threads.  It may
+              be that there is enough natural variation with the work sharing (ABDADA-like) in pv nodes
+              along with other natural differences between threads to make other types of variations not
+              a win.  Probably should revisit this in future.
+              --> testing a change (1 processor) to no longer do singular extensions at root
+                   Failed ~ 15 elo worse to not do singular extensions at root, keeping
+              --> testing a change (1 processor) to use null move to produce hmoves for sing.
+                  extension test...  1 elo improvement in 1000 games, not enough to implement
+                  given that I've tested this before and found it was not better.
+NOTE on 2017_08_18 2017_08_13 tests: testing of parallel search algorithms, not necessarily keeping these 
+              changes, see results in testmatches directory.  Both versions tested against 2017_03_18 version
+              which has differences in NULL move and conditions for singular extensions in depths 3 and 4.
+2017_08_18 -- Test of having just depth differences between threads on 4 cpus (theads 3 and 4 are depth+1)
+2017_08_13 -- Test of having no differences between searches in threads on 4 cpus
+2017_03_18 -- Minor revision to king safety variables based on train_eval results
+2017_02_12 -- Put hash probes back in qsearch... need to test further whether this is better or not
+2017_02_11 -- Added idea from CCC by Tom Kerrigan to do a hash check if we have skipped moves in SMP search, because
+                that node may resolve quickly in another thread. Seems to be a 10% speedup.   Also changed hash
+                probes in qsearch to only happen in first ply of qsearch.
+Changes since 7.96b
+2017_02_04 -- Moved initialization of log lock to before everything in main.cpp to avoid calling it back accident.
+
+Changes since 7.92b
+2017_01_15/15a/21 -- Added initialization to lots of variables, just in case.  Put in code to be sure multiple
+                  threads memory is cleared when program exits.  Found a bug in how reply moves are assigned.
+                  And finally fixed a bug in the new outpost code from a few days ago, and it turns out
+                  that was the one causing some search instability due to occasional access to a wrong
+                  memory location.
+2017_01_13/14 -- Added SPACE to pawn calculations for early part of the game.  Reorganized functions and
+                  added destructor for threads. Debugging some node count instability, so replacing 
+                  node count based move ordering with previous version (history based).  May try this again later, but
+                  it was a small improvement anyway.  
+2017_01_12 -- Added bonus/penalty for immediate pawn threats on minor/major pieces in score_pos function
+2017_01_11 -- Updated piece and bishop pair values.  Also put in pawn limit on outpost scoring and revised
+                outpost values
+2017_01_10 -- Changed method of computing pawn attacks... using a bitboard now in pawn hash.  Also corrected
+                a major pawn_guard bug in the mobility functions.  Updated outpost values to compute
+                them more generally... need to consider adding restictions on the number of pawns present
+                back in.  Computing king attacks including pawn guarding those spaces and pawn attacks
+                on those spaces near the king.  Revised the scoring of king attacks. Score tuning on
+                all of these issues was done with train_eval command (see game_rec.cpp for function)
+                against CCRL-4040.fentest that I created awhile back from many CCRL games between top
+                engines.  These are lots of changes and should probably be checked on and off over 
+                the coming days to maximize benefits.
+2017_01_09 -- Minor improvement from increasing time control (measured for several values and estimate a 
+                +4 elo improvement). Revised code for minor piece outposts and values.
+2017_01_08 -- Only tested and implemented new compile options in comp.pl (just -03).  A number
+                of setup fixes including updating game movelist on setmoves or makemoves instead
+                of every loop of game.  Also moved sigint to happen once in response to identifying
+                we are in xboard mode.  
+2017_01_07 -- Fixed root move ordering in search.cpp
+2016_12_31 -- Aborting qsearch when in check (after first ply) and returning alpha rather than
+                generating and testing all evasions.
+2016_12_25 -- Adding the ability to keep those moves near the top of the list for a couple of
+                plys after being identified (see below)... adjusting score if the move would not
+                otherwise be near the top.  Removing prev->pv_node conditions on futility 
+                move pruning and checks in qsearch
+2016_12_24 -- Improvement to move very high node_count moves right to the top of the list (after 
+                the previous best move).
+2016_12_23 -- Doing root move sorting based on node counts -- found it is best to use to identify
+                a small number of moves to be ranked higher rather than to sort all the moves.
+2016_12_20 -- Modified search.cpp to account for promotions during futility pruning.  Also
+                disabled cmove and rmove updates due to singular search extension... the depth
+                is simply too low for this to be reliable.
+2016_12_19 -- Modified move generation functions (moves.cpp, captures.cpp, captchecks.cpp) and
+               exmove.cpp and define.h to remove explicit identification of pawn_push2 in favor of
+               id'ing and using pawn_push7 (push to 7th rank) as part of move type structure.  Also being
+               sure EP captures are handled properly in move scoring (previously the value of the captured
+               piece was not included.
+	       	     Also tested idea of requiring average of scores of two best moves in non-tactical
+               situations at depth = 0 for scoring.... slight regression, but promising.  Didn't keep
+               in main code but saved as search.cpp_multi_score_test.  Compare to search.cpp_old to
+               see what changes are needed to try this again.
+2016_12_18 -- Remvoved premove score adjustment described in previous version as it 
+               caused a regression when tested alone.
+2016_12_17 -- Removed unnecessary rmove score assignment from moves.cpp. Adjust premove
+               score based on IID scores returned.
+2016_12_10 -- Rolled back 2016_11_25 changes.  Allowed winning captures to contribute
+               to combination moves if target capture is not equal or greater value
+               than the attacking piece               
+2016_12_07 -- Changed back to fail-soft alpha-beta.  Slight speed-up.
+2016_11_25 -- Allowed singular extensions to apply to many more nodes and removed some
+               restrictions on move reductions.
+2016_11_24 (tested as 'test') -- Reset score function and values to v7.92 but kept other
+               changes.
+2016_09_09 -- Added adjustment to node interval for time checking based on machine speed
+               and time left. Idea from CCC discussion.
+	   -- Removed node count increases during search pruning as it was too expensive
+               to do a search interrupt test at these times and I couldn't chance missing
+               a search interrupt by not checking then.  
+           -- king safety improved/streamlined to allow some king safety contribution when
+               there is no queen  
+2016_08_28 -- Added outpost and blocker scoring for bishops.  BISHOP_PAIR score revised
+2016_08_15 -- Improvement to move ordering if a move is checked to be singular but
+               found not to be... move disproving singularness is used to better
+               order moves.
+2016_07_15 -- Small edits to time parameters related to low time situations, resetting
+               closer to v7.88 approach for these situations. 
+	   -- Removed unnecessary logic in ex_move.cpp     
+2016_05_22 -- Removed move verification and replaced it with some sanity checking both
+               when moves are retreived from hash table and in the exmove function.
+               This, along with the 64-bit hash key and Hyatt's locklesss hashing should 
+	       be sufficient to prevent moves break the search.  A few percent speed
+               increase over doing a full verification.
+           -- Returning scores outside alpha/beta bounds when they are MATES, but not
+               otherwise
+Changes since 7.88b
+2016_05_10 -- Added verification of hash move to avoid collisions on the move.
+2016_05_08 -- Moving extra thread initization into functions separate from the
+               search itself and putting associated variables in the tree
+               search structure itself. 
+2016_05_07 -- Fixing testsuite timing bug. Moved declaration of search threads to 
+               the tree search structure itself.
+2016_03_21 -- Cleaning up time control parameters and fixing a bug in the mttc
+               variable and how it interacts with lags in search.cpp.  Wrote
+               run_selftest_tc_cli.pl to test the mttc variable cases.
+2016_03_20 -- Not allowing the additional doubling of search time, but keeping
+               the other timing changes.
+2016_03_19 -- Minor clarification of check scoring in captchecks.cpp, does not
+               affect search.  Trying allowing additional doubling of search
+               time for fail lows and adjusting the threshold at which these
+               additional doubling happen (amount of score drop required increases).
+	       Default time per move needs to be tuned.
+2016_01_17 -- Considate and tweak king safety changes
+2016_01_05 -- Made defect counting depending on queen prescense not upon attacks
+2016_01_03 -- Set king safety variables to zero if there is no queen
+Changes since 7.71b
+2015_12_27 -- Adjust hash signature for a skipped move rather than preventing storage
+               on skipped moves... should allow faster resolution of repeated singular
+               searches.
+2015_12_26 -- Implemented singular move test on the root node along with a
+               time reduction in singular move cases.
+2015_12_24 -- Fix of singular move identification during ponder (I hope)
+               --> Also discovered that I needed a better way of representing
+                   a singular move because changing a bit in the move structure
+                   created an unstable situation for move comparisions (sometimes
+                   the same move might or might not be singular... for example,
+                   moves always did not have their singular bit set when generated).
+                   Decided to keep track of singular status in a node using the
+                   singular variable and only set it in the move structure just
+                   before storing the hmove in the hash table, then unset it.
+                   When the hash move is retrieved, the singular status is sent
+                   back separately and unset from the move structure.
+2015_12_22 -- Consolidate changes, essentially the 2015_12_20 verison
+2015_12_20 -- Tuned NO_ROOT_LMR_SCORE parameter
+2015_12_15 -- When in the real pv (same moves as in pc[0][x] string) then don't do
+               move reductions if the score drops unexpectedly
+2015_12_14 -- Tracking singular status as part of the move information.  Also storing 
+               a tree search variable to indicate if the reply move is singular in the
+               pv to help find 'easy' moves that don't require search
+2015_12_13 -- If a move is not singular, rank the alternative move that caused it 
+               not to be singular as higher in the move list
+2015_12_07 -- Modifying per square mobility transform of knights to account for the
+               fact that Knights only have a maximum of 8 possible squares
+2015_12_06 -- Changes to TRADES evaluation
+2015_11_25 -- added bonus to move score for a check if qchecks variable is
+               a certain amount
+2015_11_24 -- tweaked how qchecks are assigned in scoring module
+2015_11_23 -- tweaked the pawn defect parameters -- tested as 'vtest'
+2015_11_22 -- removed unused 'has_castled' parameter
+2015_11_21 -- threat_check flag for null move search to allow king moves without
+               reductions
+2015_11_20 -- More slight modifications to check determination in qsearch
+2015_11_16 -- Removed the LIMIT_THREADS parameter and slightly modified
+                the check determination in qsearch
+2015_11_15 -- Found and removed a major bug introduced whne I put cmove
+                location ahead of IID
+2015_11_01 -- Introduced some thread differences in null move and singular ext.
+               for SMP.  Should test these more generally
+2015_10_31 -- removed IID from contributing to singular ext
+2015_10_28 -- put back killer move threshold for reductions/pruning
+2015_10_26 -- put in some restictions on the number of extensions in a row
+2015_10_25 -- put back in_pv and other restrictions on singular ext
+2015_09_17 -- put look for cmove and rmove *before* IID to allow those moves to
+               transfer through to IID nodes and be used there
+2015_09_16 -- removed mostly unused mate_ext variable and streamlined code
+2015_09_15 -- removed in_pv and some other restrictions on singular ext
+2015_09_13 -- Fixed bug in check extension
+2015_09_12 -- Using qchecks variable in check extensions
+2015_09_07 -- Undo time control and alpha-beta changes and check abort changes
+2015_09_06 -- Raise depth limit for IID by one ply
+2015_09_05 -- Changes to time control and alpha-beta window
+2015_09_03 -- Applying reductions/pruning to some killer moves now.  Added filter on reductions/killer moves
+               based on difference between premove score and alpha
+2015_09_02 -- Added a check abort to qsearch after 2 plies (was 6 before)
+2015_09_01 -- Optimization to passed pawn scoring and storing hash result for qsearch on every
+               ply. 
+2015_08_28 -- Fix of trade pieces/pawn bonus scoring.  Added open/half-open files to king safety
+               consideration... likely needs some tuning.
+2015_08_26 -- Using fail-hard rather than fail soft and appropriate hash table behavior
+2015_06_29 -- Not a 'passed' pawn if behind your own pawn
+2015_06_27 -- Small change to check extension (winning check only) and mobility calculation for 'hanging pieces'
+              includes case where pieces have greater value than attacker
+Changes since 7.51b
+2015_05_26 -- Consider value of bishop pair when scoring potential captures
+2015_05_25 -- Look for checks in qsearch nodes straight from pv nodes as well
+2015_05_18 -- Only check for threat squares in the first few moves in a node
+2015_05_17 -- Restricts singular to pv nodes, previous pv nodes, and moves following a hash move
+2015_05_13 -- Checks extended in pv and previous pv nodes
+2015_04_04 -- Additional reductions if premove score is less than a certain amount *and*
+               extra ply of extension of one-reply-to-check happens at the last ply *and*
+               adjustment of research window on main iterative deepening (needs tuned?)
+2015_04_03 -- No automatic check extension at depth=0, singular depth limit depends on 
+               max depth of iteration
+2015_04_02 -- Removed tactical move restriction, just singular moves
+               -- no mate extension
+2015_03_28 -- Singular extension working again, focus is only on tactical moves or responses
+2015_01_06 -- Pawn hash move removed
+2015_01_04 -- Allowing abort-search and deep reductions in pv nodes.
+Changes since 7.31b
+2014_12_24 -- Removing extensions near tips and making 'mate_ext' happen everywhere.  
+                Revising piece square tables to be hardwired rather than adjusted at 
+                start-up as I was doing during tuning.  
+2014_12_23 -- Revisions to Rook mobility (bug fix). 
+2014_12_22 -- Modified singular extension conditions to only happen rarely
+2014_12_21 -- Worked on piece square optimization, trial and error mostly, over the last
+                week.  Train eval stuff is now controlled by a define in define.h... 
+                activating this with a compile line switch because it really slows the
+                search down.
+2014_12_13 -- King safety reset to v7.31b values.  Restricted large reductions (depth/5)
+                in non-pv nodes to also not apply in prev->pv_nodes as well.  Now that
+                singular extensions appear to be working, I may be able to do away with
+                large reductions overall, but I need to test that.
+           -- Work on the automated tuning function and function to create a FEN list
+                from a PGN file.  Note that the 'build_fen' function is still just dumping
+                the resulting FEN into the log file where they need to be extracted. 
+2014_12_05 -- Pawn Duo revised, SPACE removed, more tuning
+2014_12_04 -- Work on tuning eval terms by comparing to position/q-search evaluations
+                based on CCC discussion from several months ago.   My first attempts at 
+                this months ago did not work at all, but now there is at least neutral or
+                small gains from it (few elo).  However, it did lead me to revise an
+                eval calculation (trapped rook) that appeared to be doing nothing useful.
+                This tuning code may eventually need a compile switch to keep it from
+                slowing down search during games, but at the moment that doesn't appear
+                to be a big deal.
+2014_11_30 -- Reintroduce singular extensions, applied broadly, but with much reduced
+                depth... produces a small improvement +5 elo... 
+2014_11_26 -- Fixed a major bug in singular extensions but also decided to comment them
+                out for now.
+Changes since 7.26b
+2014_08_17 -- Added namespace change by Matthew Lai... no functonal changes
+                fixed long standing evaluation bug in certain endgames
+2014_08_16 -- Fixed Castling rights bug reported by Matthew Lai.  Reintroduced depth requirement on cmove. 
+2014_07_26 -- Reduced singular extenison margin.  Removed depth requirement on cmove
+2014_07_15 -- Fixed move_to_skip conditions in pvs search... wasn't taking this into account
+               in some important situations
+2014_07_14 -- Fixed draw testing in qsearch 
+2014_07_11 -- IID and singular tests were leaving gaps in move record not handled properly by
+               repetition checking... fixed now, I think
+2014_06_21 -- Added in_pv and prev->pv_node conditions to both futility pruning and abort node 
+2014_06_14 -- Added requirement pawn pushes be 'safe' for extensions and changed priority of pawn hash 
+               moves with their scoring
+2014_06_13 -- Added addition extensions for nodes just one removed from the PV
+2014_06_05 -- IID only when *not* following a hash move (outside of PV... IID is always done in PV nodes)
+2014_06_03 -- Singular extension now using hash move and IID move, but only when the previous move was
+               also a hash or IID move (suggesting an important line to follow in more depth).
+2014_06_01 -- Doing singular extensions by excluding moves from next iteration of pvs and calling
+               pvs again (rather than looping over move list).  Doing fewer reductions.  Removing
+               check constraints on IID.
+2014_05_28 -- Implementation of singular extension, but only when qchecks are high enough
+2014_05_27 -- Adjust reductions and extensions 
+Changes since 7.18b
+2014_05_05 -- Removed SE as it doesn't seem advantageous relative to 
+              lots of reductions 
+2014_05_04 -- Applying SE both in an out of PV with some restrictions
+2014_05_03 -- Using larger king safety value
+2014_04_04 -- Implemented futility pruning
+2014_04_01 -- Less reduction + doing singular ext. in PV -- lots of room for experiment
+2014_03_30 -- Another minor fix to game stage calc.
+2014_03_29 -- Fixed up a couple of game stage calculations
+2014_03_25 -- Changed max timed used to 1/4th of gametime left. Changed cmove replacement
+               strategy slightly
+2014_03_23 -- Added a mate_ext identification outside of null move
+2014_03_22 -- Prevent check evasions from contributing to killer and history scores
+               Also prevent checking moves from contributing to history scores 
+               considering that history scores mostly govern whether a move will
+               be reduced or pruned so these moves are immune anyway.
+2014_03_21 -- Back to a single PVS function with pv nodes identified, done to
+               avoid confusion with much repeated code in two functions.  Need
+               to check SMP case carefully to see nothing is broken.  
+              Added basic code for singular extensions (currently disabled)
+2014_03_20 -- Some (minor) revision to null move
+2014_03_19 -- Revisions to make Null Move more conservative
+2014_03_16 -- Fixed a bug that left asserts turned on all the time, and switched
+               game stage to use piece counts
+2014_02_23 -- CLOP optimized attack scale score, some pawn terms, and TRADES
+2014_02_16 -- Removed easy move as it tested better without; removed connected rook scoring;
+               revised knight outpost scoring
+2014_01_10 -- Changed time control to remove time extension due to fail lows.  Added 
+               an easy move candidate search in PV nodes at ply == 2 to find possible
+               easy moves on the next search (basically a check to see if move is singular).
+               Added time extension of we didn't pick opponents move.  Tuned TC 
+               parameters with CLOP.
+
+Changes since 7.11b
+2013_09_18 -- Fixed smp bug in smp.cpp using a different type of lock system to keep 
+              threads in sync
+2013_09_12 -- Removed ROOK_ON_7TH changes by going back to score.h and score.cpp
+              from 2013_08_26 version
+2013_09_08 -- Attempt to fix rare crash problem that showed up in v2013_09_03 but not before
+               ... maybe in score.h?  Changing to old version (mostly) to see.
+2013_09_07 -- Fixed multi-processing bug where asynchonicity could cause early termination
+               of the search.
+2013_09_06 -- Found and fixed multi-processing bug that appears if the first move is not 
+               legal... previous version would try to split work without having established
+               a score yet.
+2013_09_03 -- Change piece-square for Rook and Queen to remove encouragement to be on 7th rank, 
+               replaced with a ROOK_ON_7TH parameter that needs tuning
+2013_09_02 -- Change in smp.cpp to only terminate main thread when an alternate thread finishes first,
+               this will trigger the rest to complete using locks to wait for them
+2013_08_26 -- Fixed smp.cpp to be back to how it was (before last version).  Also cut the 
+               revised pawn values in score.h in half.
+2013_08_24 -- Improved backward pawn code in score.cpp.  Log_search function now serves the purpose
+               of search_display in xboard and puts everything in a single output string.  Keeping
+               search_display function for text interface only (non-xboard).
+               Modified smp.cpp to only update (and redisplay) the PV when the PV actually 
+               changes from work completed in another thread... not just because the other thread
+               finished first.
+2013_08_18/19 -- Fixed some TC issues with xx moves in xx minutes type TC and also when time left is
+                  extremely short (<= 1 second) to avoid lag issues in windows.  This time cushion
+                  is adaptive and depends on the averaged measured lag.  Reporting lag to log file.
+2013_08_12 -- Removed score=0 being changed into score=1 in score.cpp.  Also added a DRAW_SCORE
+               parameter to search.h and search.cpp to be used for 3-reps only.  This scales to
+               zero as the game stage advances.  Idea is just to prevent very early 3-reps.
+2013_08_10 -- Made history score updates (and checks against for lmr) linear with depth instead of
+               quadratdic.  Forced no time check on search until at least 3 plys had been searched.
+               Added repetition and fifty move checking to qsearch
+2013_08_07 -- Revisions to score.h parameters with CLOP.  Added TRAINING_MODE define.h parameter to 
+               change depth limited mode to a progressive mode where the depth increases as the
+               game progresses... similar to suggestion by Ed Schroeder, but much simpler
+2013_08_01 -- Removed depth check on setting null_hash parameter, requiring previous move to not
+               be a hash move before doing a null check, no longer testing for material being
+               larger than beta during null move in late plies (need to revisit this in various
+               forms). Revised what consitutes an attempt at evasion of a threat square
+2013_07_26 -- Now doing a 'premove_score' position evaluation for every position after making
+               the move leading to that position.  This score can then be used to make null move
+               and other extension/reduction decisions as we work through the movelist. 
+	       Now using difference between premove_score and beta to modify search abort test.
+	       Not doing verification search in null move. 
+	       Also expanded the threat square identification and need to investigate this further.
+	       Also changed winning capture scoring in moves.cpp
+
+Changes since 7.03b
+2013_06_25/26 -- Only aging history table during a game between searches, not clearing it completely.
+                Needed to add setting of history table = 0 when a new thread is begun or a new position
+                is set (see game_rec.cpp), as this will no longer happen in the init_thread_data function
+                defined in chess.h.
+2013_06_22   -- Changed reply and history tables to use piece-id rather than from-square as the first
+                index.
+2013_06_21   -- Changes to rook scoring values
+2013_06_20   -- Further tuning of overall king safety scaling.
+2013_06_17   -- Further modifications to King Safety, making qchecks less aggressive again and limiting
+                the contribution of pawn defects more sensibily as endgame approaches
+2013_06_16   -- Modified king safety calculation to change weights (CLOP tuned) and to calculate qchecks
+                more aggressively and king safety in general for a longer part of the game
+2013_06_15   -- Edited support.cpp to prevent xboard/search_display updates in the first 200 milli-seconds of
+                a search to avoid overwhelming the interface with updates.  No changes to playing from
+                2013_06_02
+2013_06_01/02   -- For positions where we appear to be far ahead relative to the piece we are moving,
+                use null move refutation to detect if a piece is threatened... if so, make at least
+                one attempt to evade capture of this threatened piece before aborting search in
+                that node. Got the idea from a CCC post by Don Dailey saying that Komodo does not reduce
+                (or reduces less) moves by pieces that are en-prise
+	     -- Fixed pondering bug in SMP mode where the TIME_FLAG score would be replaced by score
+                in another thread (see smp.cpp)	                
+2013_05_26   -- Added two layers of history based reductions
+2013_05_25   -- Additional code clean-up, should play same as 2013_05_24
+2013_05_24   -- padded hash entries and fixed a floating point calc to be integer to get same
+                node counts from 32 and 64 bit compiles
+2013_05_23   -- removed old king-capture code from captures.cpp
+                moved 'premove_score' from pos structure to node structure
+2013_05_19   -- testing shows regression from many of the recent parameter tunings
+	        reseting values to 2013_04_15 version.
+2013_05_17   -- Addition of a pawn hash move.  Also having 'new' command disable force mode (fixes a bug)
+2013_05_16   -- revisions to weak and backward pawn calculations.  CLOP optimized values for these.  Different,
+                but not better... however, I will keep for now
+2013_05_14   -- hashing in side-to-move for combination move signatures to avoid the unique sequence problem
+                mentioned by Don Daily on CCC.  Somehow I missed this before.  Doubled pawn values marginally
+                'improved' (no clear elo difference, but appear more reasonable).
+2013_05_11   -- Fixed some bugs in work sharing implementation.  Changed how side-to-move bonus in score.cpp is
+                handled and now need to work to optimize this.  Fixed a bug in force mode where pondering was
+                possible, but now have a 'force_mode' flag in the game_rec to handle this.
+2013_05_07   -- Implemented more sophisticated work sharing similar to the ABDADA idea, but using a data structure
+                to keep track of the position currently being evaluated at a given ply of the search.
+                Only doing this in PV nodes.  Still need to fully comment it and test speed, but it seems
+                to be 10% faster than my previous method of just alternating moves at the root.  This
+                change was motivated by Daniel Shawuls discussion of ABDADA on CCC.
+April 2013   -- Clop tuning and changes to overall evaluation scale for non-piece-square values as well
+                as attempts to tune several other parameters.  Most significant effect was on passed
+                pawns and a bit on rook values.  Need to continue this process.  Also removed 
+                static null move so that now I have no direct evaluation based pruning at all.
+Changes since 7.01b
+2013_03_25   -- Fixed pondering bug related to root TB hits when pondering... now doing the root TB
+             search when doing a search for a move to ponder.
+2013_03_24   -- Made hash record more efficient in terms of storage so that a hash bucket fits into
+             64 bytes.  Implemented pre-fetching on hash and score records in places where it was
+             a pretty save bet (and lots of work was done before they would be needed)... speed up
+	     is 3-4% for single core and could be more (6%? not sure) for 4 cores
+	     -- Also trying the hash move first in pvs and zws functions in search.cpp.  No correctness
+             checking on the hash move -- just relying on the 64 bit hash signature to prevent
+             collisions... need to test carefully to see this doesn't cause problems. 
+2013_03_14/15 -- Fixed hash tables to be arbitrary sizes and potentially very large.  Fixed input
+              during search to better handle analysis mode in Arena as well as quit and move-now
+              commands during search.  Put in a LIMIT_CORES parameter to allow user to define
+              a limited number of cores at start-up (cannot be exceeded during play).  Of course
+              this is still limited by compile limit of 16 (currently).
+
+Changes up to and since v6.71b
+2013_03_09 -- Added a root_tb score check to qsearch calls in the root_pvs function, also made a
+              small correction to these score checks.  
+2013_03_07 -- Extend hash probes beyond first level of qsearch to all qsearch plys... seems to be
+              a small win (motivated by CCC discussion of hash probes in qsearch)
+2013_02_24 -- Fixed a free passed pawn bug (computed square of king wrong for years!), also fixed a
+              a fail-low PV bug when searching in threads other than the main one.  Now should update
+              the PV moves properly on fail low in all threads.  CLOP-timized the passed pawn values.
+2013_02_23 -- Fixed a bug in TB logic written yesterday which prevented 4-man access during search
+2013_02_22 -- Discovered that 5-man TB access bogs down the search and weakens play significantly.
+	      Restricting TB access to 4-man and less during search.  Only allow > 4-man at ply-1
+              to determine if an move is immediately winning.  Added TB access during qsearch and
+              changed TB access to happen only after captures (or at ply == 1).
+2013_02_17 -- Fixed (and finally uncommented) code to encourage keeping pawns when ahead and pieces
+              when behind.  Put in a simple version of a 'space' calculation in pawn evaluation.
+	      Added 'early' and 'late' scores for some pawn characteristics, but have not had
+              success tuning these yet.
+2013_02_12 -- Reduced size of many arrays to avoid unnecessary wasted space, speed-up of about 2%
+              Fixed a bug with exiting search too early before the fastest Mate is resolved.
+2013_02_10 -- Doubled the time limit threshold for time-checks during an iteration, this will allow
+              additional time for iterations to complete.  CLOP optimized the initial time limit
+              factor to accomodiate the extra time that will be used occasionally to do this.
+	      Reduced the 'max_limit' on a search to be a bit less conservative.
+2013_02_06 -- Added CLOP tuned adjustment to fixed move per session time control
+2013_02_03 -- Added bishop trap evaluation back in (but with smaller penalty)
+	      and made time control increased less for pondering cases (seems to be better, but
+	      I should tune this).
+2013_02_02 -- Small changes to opening book to accomodate use of the Million-base PGN from Ed Schroder's
+              website as the raw PGN library from which the main_bk.dat is built.  Added to this library
+	      are 18,000 EXchess rapid games to have some win/loss statistics.  Because this PGN has so
+	      many moves, the usual move-limit that I used (3 or 5 times played) may not be enough, so I
+	      added a 5% cutoff... any move played less than 5% of the time will not be played at all. 
+	      This cutoff is activated when the position is reached in a game (no good way of doing it
+	      while building the book).  Of course, I can still generate a 'starting book' if I want to
+	      play unusual moves or lines on purpose.
+2013_02_01 -- Haven't taken notes here in a long time... very few (if any!) changes from late Sept until 
+              mid-December.  Worked on TC before v6.71b release, but cannot remember any other changes...
+	      perhaps a few small eval changes (no more bishop trap)... not sure if that was before v6.71.
+	      Since v6.71b have worked on time control and found a bug in cutechess-cli, so
+	      needed to re-tune time control Divisor with CLOP... now much better in the general increment
+              case (no increment up to increments of order 1/60th of main time control... haven't tested
+              larger increments, but they should be OK).  Still need to look at repeating TC cases, such
+	      as those used by testing agencies.  Over the break, I implemented a simple form of shared hash SMP 
+	      search.... described it in a talkchess.com post... new file smp.cpp has most of the work 
+	      on this.  Some changes to search.cpp and a few other places also were necessary.  Changes
+	      to hashing were required (using lockless style hashing), and these should be checked at some
+	      point for efficiency, although they seem to work very well (a tiny bit slower, losing a few
+	      elo, compared to not doing the lockless style hashing).  It turned out to be best to have a 
+	      single root move list that is shared between the threads, so that was added. 
+
+	      ** places to explore further are the added depths to the parallel threads in the SMP search,
+	      is there a better arrangement than I am currently using.
+
+Changes since v6.50b
+2012_09_22 -- Some small changes.  Improved king safety that includes pawn shield in a better way (I think).
+              Removed early exit code from scoring function.  Removed pruning from move loop and put in
+              a static null move in the null move code.  Also based some null move decisions (when going
+              directly into qsearch) on both material and full position score to avoid cases where
+              all of the advantage is positional without allowing the other side to make position type
+              moves.  Need to tune up these pruning score values.
+
+Changes since v6.30b
+2012_08_15 -- Changed random number generator and replaced it with pre-computed hash values that
+              are 'optimized' for hamming distance, see included perl scripts. Simplified number
+              of hash codes necessary (several unnecessary ones removed).
+2012_08_12/13 -- More tweaks to combination move hash table, including 2 level, depth priority
+2012_08_10 -- Tweaked the combination hash move to not include winning captures and to use
+              a smaller table size (about 1.4 MB total), should consider making this adjustable
+              as part of the overall hash size allotment.
+2012_08_09 -- Implemented a combination move hash in a similar idea to the counter-move heuristic,
+	      but with two preceding moves set, so the stored move is the finishing one of a 
+              combination for the side to move.  Learned afterward that this is functionally the same
+              as Steven Edwards LBR, Variant 1, idea in the chess programming wiki.
+2012_08_08 -- Implemented 'counter-move' heuristic for move ordering, see chess programming wiki page
+2012_08_05 -- Implemented Chess960 variant.  Still need to broadly test, but seems to work well
+              in limited test (~ 100 games or so)
+2012_08_03 -- Adjusted moves.cpp scoring of captures to (1) allow minor exchanges and (2) include
+              a bonus for capturing PAWNS about to queen... should perhaps be more sophisticated, but
+              also added the same approach as in captures.cpp and captchecks.cpp
+2012_08_02 -- Added increased, depth-dependend reductions for alpha==beta-1 nodes in main search
+2012_07_29 -- Moved qchecks assignment to king scoring function to be sure that it happens even when
+	      a lazy eval happens; however, this had the side-effect of causing checks in q-search
+              when the situation was 'hopeless' (score well below alpha), so I put in a cutoff value 
+              NO_QCHECKS into qsearch function to avoid this situation.  Did a rough CLOP optimization
+              of this value.
+	      Increased lazy eval margin due to rough CLOP testing of that variable.
+2012_07_27 -- Added a scoring hash table that is accessed at the start and end of the score_pos
+              function.  Modifications to several functions to make this work.  Should have 
+              sped up search by 10% or so with no other changes... Oh wait, I see changes in 
+              node counts in some cases.  I think this must be due to cases where the lazy eval
+              is not engaged because of the score hash hit.
+2012_07_24 -- Changes to king safety scoring to allow intermediate (rather than all or nothing)
+              king safety scores when king tropism was 0 or less.
+
+

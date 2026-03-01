@@ -1,0 +1,13 @@
+
+rm -rf EXchess.app
+
+g++ -I/usr/local/include -I/usr/local/include/FL/images -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_THREAD_SAFE -D_REENTRANT -DMAKE_GUI -D TABLEBASES=1 -o 'EXchess' '../src/EXchess.cc' /usr/local/lib/libfltk.a -lpthread -framework Cocoa -O2
+
+/usr/local/bin/fltk-config --post EXchess
+
+cp search.par EXchess.app/Contents/MacOS/search.par
+cp main_bk.dat EXchess.app/Contents/MacOS/main_bk.dat
+mkdir EXchess.app/Contents/Resources
+cp icon.icns EXchess.app/Contents/Resources/icon.icns
+cp Info.plist EXchess.app/Contents/Info.plist
+

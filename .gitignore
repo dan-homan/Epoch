@@ -1,0 +1,19 @@
+# Ignore everything by default
+*
+
+# Except src/ and this file
+!src/
+!src/**
+!.gitignore
+
+# Within src/, ignore OS/editor artifacts and binary/backup files
+src/.DS_Store
+src/**/.DS_Store
+src/*~
+src/**/*~
+src/#*#
+src/**/#*#
+src/*.cpp_*
+src/*.h_save
+src/main_bk.dat
+src/debug.txt
