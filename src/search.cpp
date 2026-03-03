@@ -272,8 +272,11 @@ move tree_search::search(position p, int time_limit, int T, game_rec *gr)
       tdata[ti].n[0].acc.dirty[0] = tdata[ti].n[0].acc.dirty[1] = true;
       nnue_init_accumulator(tdata[ti].n[0].acc, p);
     }
+    if(!ti) tdata[0].n[0].premove_score = p.score_pos(gr,tdata,
+                                           nnue_available ? &tdata[0].n[0].acc : nullptr);
+#else
+    if(!ti) tdata[0].n[0].premove_score = p.score_pos(gr,tdata);
 #endif
-    if(!ti) tdata[0].n[0].premove_score = p.score_pos(gr,tdata NNUE_ACC_NULL);
     if(ti > 0) {
       tdata[ti].n[0].premove_score = tdata[0].n[0].premove_score;
     }
@@ -727,7 +730,10 @@ void search_node::root_pvs()
     && ply + depth < MAXD-3) {
 
     next->pos = pos; next->pos.last.t = NOMOVE;
-    next->premove_score = premove_score; 
+    next->premove_score = premove_score;
+#if NNUE
+    if(nnue_available) { next->acc = acc; next->acc.computed = true; }
+#endif
 #if DEBUG_SEARCH
     search_outfile << space_string << "Entering an Singular Ext. loop\n";
 #endif
@@ -827,15 +833,12 @@ void search_node::root_pvs()
    //   -- if it is illegal, skip to next move in list
    // -------------------------------------------------
    next->pos = pos;
-#if NNUE
-   if(nnue_available) next->acc = acc;
-#endif
    if(!next->pos.exec_move(smove, ply)) {
     mcount++;
     continue;
    }
 #if NNUE
-   if(nnue_available) nnue_update_accumulator(next->acc, pos, next->pos, smove);
+   if(nnue_available) nnue_record_delta(next->acc, pos, next->pos, smove);
 #endif
 
    //---------------------------------------------
@@ -1269,6 +1272,9 @@ int search_node::pvs(int alpha, int beta, int depth, int in_pv, int move_to_skip
  //---------------------------------------------
  // Generate a pre-move score for the position
  //---------------------------------------------
+#if NNUE
+ if(nnue_available && !acc.computed) nnue_apply_delta(acc, prev->acc, pos);
+#endif
  if(pos.last.t) premove_score = pos.score_pos(gr,tdata NNUE_ACC_ARG);
 
  // ----------------------------------------------------------
@@ -1299,7 +1305,7 @@ int search_node::pvs(int alpha, int beta, int depth, int in_pv, int move_to_skip
      next->premove_score = -premove_score;
      next->pos.fifty = 0;
 #if NNUE
-     if(nnue_available) next->acc = acc;
+     if(nnue_available) { next->acc = acc; next->acc.computed = true; }
 #endif
      // clear old downstream checks so they don't trigger threat check
      next->next->pos.check = 0;
@@ -1402,10 +1408,13 @@ int search_node::pvs(int alpha, int beta, int depth, int in_pv, int move_to_skip
  else if(depth > 3
  	 && !move_to_skip 
     	 && (in_pv || prev->pv_node || prev->pos.hmove.t != pos.last.t || !pos.last.t)) {
-    tdata->internal_iter++; 
+    tdata->internal_iter++;
     next->pos = pos; next->pos.last.t = NOMOVE;
     next->premove_score = premove_score;
     depth_mod = prev->depth_mod;
+#if NNUE
+    if(nnue_available) { next->acc = acc; next->acc.computed = true; }
+#endif
 #if DEBUG_SEARCH
     search_outfile << space_string << "Entering an IID loop\n";
 #endif
@@ -1460,6 +1469,9 @@ int search_node::pvs(int alpha, int beta, int depth, int in_pv, int move_to_skip
     next->pos = pos; next->pos.last.t = NOMOVE;
     next->premove_score = premove_score;
     depth_mod = prev->depth_mod;
+#if NNUE
+    if(nnue_available) { next->acc = acc; next->acc.computed = true; }
+#endif
 #if DEBUG_SEARCH
     search_outfile << space_string << "Entering an Singular Ext. loop\n";
 #endif
@@ -1627,15 +1639,12 @@ int search_node::pvs(int alpha, int beta, int depth, int in_pv, int move_to_skip
    //   -- if it is illegal, skip to next move in list
    // -------------------------------------------------
    next->pos = pos;
-#if NNUE
-   if(nnue_available) next->acc = acc;
-#endif
    if(!next->pos.exec_move(smove, ply)) {
     mcount++;
     continue;
    }
 #if NNUE
-   if(nnue_available) nnue_update_accumulator(next->acc, pos, next->pos, smove);
+   if(nnue_available) nnue_record_delta(next->acc, pos, next->pos, smove);
 #endif
 
    //---------------------------------------------
@@ -2116,7 +2125,10 @@ int search_node::qsearch(int alpha, int beta, int qply)
   //     Seems to work about as well as searching all check
   //     evasions, but not better, so not doing this now
   //--------------------------------------------------------
-  if(ply >= MAXD-2 || (pos.check && qply > 0)) 
+#if NNUE
+  if(nnue_available && !acc.computed) nnue_apply_delta(acc, prev->acc, pos);
+#endif
+  if(ply >= MAXD-2 || (pos.check && qply > 0))
     return MAX(MIN(pos.score_pos(gr, tdata NNUE_ACC_ARG),beta),alpha);
 
   //---------------------------  
@@ -2226,12 +2238,9 @@ int search_node::qsearch(int alpha, int beta, int qply)
     // execute move
     //   -- returns a zero if the move leaves us in check
     next->pos = pos;
-#if NNUE
-    if(nnue_available) next->acc = acc;
-#endif
     if(!next->pos.exec_move(smove, ply)) { continue; }
 #if NNUE
-    if(nnue_available) nnue_update_accumulator(next->acc, pos, next->pos, smove);
+    if(nnue_available) nnue_record_delta(next->acc, pos, next->pos, smove);
 #endif
 
     // Prefetch the hash line for this position so it can be accessed quickly in next node

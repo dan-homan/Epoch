@@ -1,13 +1,14 @@
 // EXchess NNUE evaluation — HalfKAv2_hm format (Stockfish 15/16 era)
 // Written from scratch; Stockfish source consulted only for file-format layout.
 //
-// File format empirically determined from nn-ae6a388e4a1a.nnue:
+// File format confirmed from nn-ae6a388e4a1a.nnue (Stockfish 15.1):
 //   [Header] version(4) + hash(4) + desc_size(4) + desc(N)
 //   [FT]     ft_hash(4) + LEB128(biases 1024 i16) + LEB128(weights 22528×1024 i16)
 //             + LEB128(psqt 22528×8 i32)
 //   [Stacks] 8 × [stack_hash(4) + FC0_bias(16×i32) + FC0_wt(16×3072×i8)
 //                               + FC1_bias(32×i32) + FC1_wt(32×32×i8)
 //                               + FC2_bias(1×i32)  + FC2_wt(32×i8)]
+//   Each stack = 4+64+49152+128+1024+4+32 = 50408 bytes
 //   (no separate net_hash; the FT section ends immediately before stack 0's hash)
 
 #include <stdint.h>
@@ -32,7 +33,7 @@ static int16_t *ft_biases    = nullptr; // [NNUE_HALF_DIMS]
 static int16_t *ft_weights   = nullptr; // [NNUE_FT_INPUTS × NNUE_HALF_DIMS]
 static int32_t *psqt_weights = nullptr; // [NNUE_FT_INPUTS × NNUE_PSQT_BKTS]
 
-// FC0: output-major weight layout, 16 outputs × 3072 inputs
+// FC0: output-major weight layout, 16 outputs × 3072 inputs (vdotq-reordered at load)
 static int32_t l0_biases [NNUE_LAYER_STACKS][NNUE_L0_SIZE];
 static int8_t  l0_weights[NNUE_LAYER_STACKS][NNUE_L0_SIZE * NNUE_L0_INPUT];
 
@@ -344,6 +345,7 @@ void nnue_init_accumulator(NNUEAccumulator &acc, const position &pos)
 
         acc.dirty[persp] = false;
     }
+    acc.computed = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +423,125 @@ void nnue_update_accumulator(NNUEAccumulator &acc,
                      halfkav2_feature(persp, our_king, to, mover_pt, mover_sd));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// nnue_record_delta — record feature-index changes for a move (no ft_weights access)
+// ---------------------------------------------------------------------------
+void nnue_record_delta(NNUEAccumulator &acc,
+                       const position  &before,
+                       const position  &after,
+                       move mv)
+{
+    acc.computed        = false;
+    acc.n_add[0]        = acc.n_add[1] = 0;
+    acc.n_sub[0]        = acc.n_sub[1] = 0;
+    acc.need_refresh[0] = acc.need_refresh[1] = false;
+
+    int from     = mv.b.from;
+    int to       = mv.b.to;
+    int mtype    = mv.b.type;
+    int mover_pt = PTYPE(before.sq[from]);
+    int mover_sd = PSIDE(before.sq[from]);
+    int capt_pt  = PTYPE(before.sq[to]);
+
+    int wksq = after.plist[WHITE][KING][1];
+    int bksq = after.plist[BLACK][KING][1];
+
+    if (mover_pt == KING) {
+        // Moving king's own perspective must be fully rebuilt.
+        acc.need_refresh[mover_sd] = true;
+
+        // Opponent's perspective: incremental update for king relocation.
+        int opp_sd   = mover_sd ^ 1;
+        int opp_king = (opp_sd == WHITE) ? wksq : bksq;
+
+        int fi;
+        fi = halfkav2_feature(opp_sd, opp_king, from, KING, mover_sd);
+        if (fi >= 0) acc.sub[opp_sd][acc.n_sub[opp_sd]++] = fi;
+        fi = halfkav2_feature(opp_sd, opp_king, to,   KING, mover_sd);
+        if (fi >= 0) acc.add[opp_sd][acc.n_add[opp_sd]++] = fi;
+
+        if (mtype & CASTLE) {
+            int rook_from, rook_to;
+            if (mover_sd == WHITE) {
+                if (to == 6) { rook_from = before.Krook[WHITE]; rook_to = 5; }
+                else         { rook_from = before.Qrook[WHITE]; rook_to = 3; }
+            } else {
+                if (to == 62) { rook_from = before.Krook[BLACK]; rook_to = 61; }
+                else          { rook_from = before.Qrook[BLACK]; rook_to = 59; }
+            }
+            fi = halfkav2_feature(opp_sd, opp_king, rook_from, ROOK, mover_sd);
+            if (fi >= 0) acc.sub[opp_sd][acc.n_sub[opp_sd]++] = fi;
+            fi = halfkav2_feature(opp_sd, opp_king, rook_to,   ROOK, mover_sd);
+            if (fi >= 0) acc.add[opp_sd][acc.n_add[opp_sd]++] = fi;
+        }
+        return;
+    }
+
+    // Non-king move: both perspectives updated incrementally.
+    for (int persp = 0; persp < 2; persp++) {
+        int our_king = (persp == WHITE) ? wksq : bksq;
+        int fi;
+
+        fi = halfkav2_feature(persp, our_king, from, mover_pt, mover_sd);
+        if (fi >= 0) acc.sub[persp][acc.n_sub[persp]++] = fi;
+
+        if (capt_pt && !(mtype & EP)) {
+            fi = halfkav2_feature(persp, our_king, to, capt_pt, mover_sd ^ 1);
+            if (fi >= 0) acc.sub[persp][acc.n_sub[persp]++] = fi;
+        }
+
+        if (mtype & EP) {
+            int ep_sq = mover_sd ? (to - 8) : (to + 8);
+            fi = halfkav2_feature(persp, our_king, ep_sq, PAWN, mover_sd ^ 1);
+            if (fi >= 0) acc.sub[persp][acc.n_sub[persp]++] = fi;
+        }
+
+        if (mtype & PROMOTE) {
+            fi = halfkav2_feature(persp, our_king, to, mv.b.promote, mover_sd);
+            if (fi >= 0) acc.add[persp][acc.n_add[persp]++] = fi;
+        } else {
+            fi = halfkav2_feature(persp, our_king, to, mover_pt, mover_sd);
+            if (fi >= 0) acc.add[persp][acc.n_add[persp]++] = fi;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// nnue_apply_delta — materialise a lazy accumulator from its parent
+// ---------------------------------------------------------------------------
+void nnue_apply_delta(NNUEAccumulator &acc,
+                      const NNUEAccumulator &parent_acc,
+                      const position &pos)
+{
+    for (int p = 0; p < 2; p++) {
+        if (acc.need_refresh[p]) {
+            // King moved for this perspective: full rebuild from position.
+            int ksq = pos.plist[p][KING][1];
+            memcpy(acc.acc[p], ft_biases, NNUE_HALF_DIMS * sizeof(int16_t));
+            memset(acc.psqt[p], 0, NNUE_PSQT_BKTS * sizeof(int32_t));
+            for (int side = 0; side < 2; side++) {
+                for (int ptype = PAWN; ptype <= KING; ptype++) {
+                    for (int i = 1; i <= pos.plist[side][ptype][0]; i++) {
+                        int psq = pos.plist[side][ptype][i];
+                        add_feat(acc.acc[p], acc.psqt[p],
+                                 halfkav2_feature(p, ksq, psq, ptype, side));
+                    }
+                }
+            }
+        } else {
+            // Incremental: copy parent's accumulator and apply the stored deltas.
+            memcpy(acc.acc[p],  parent_acc.acc[p],  NNUE_HALF_DIMS  * sizeof(int16_t));
+            memcpy(acc.psqt[p], parent_acc.psqt[p], NNUE_PSQT_BKTS * sizeof(int32_t));
+            for (int k = 0; k < acc.n_sub[p]; k++)
+                sub_feat(acc.acc[p], acc.psqt[p], acc.sub[p][k]);
+            for (int k = 0; k < acc.n_add[p]; k++)
+                add_feat(acc.acc[p], acc.psqt[p], acc.add[p][k]);
+        }
+    }
+    acc.dirty[0] = acc.dirty[1] = false;
+    acc.computed = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -625,8 +746,13 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
         network_out += (int32_t)fc2_in[i] * (int32_t)out_weights[stack][i];
 
     // 6. PSQT contribution for the selected stack
+    //    Stockfish divides (stm - opp) by 2; NNUE_PSQT_SCALE compensates (128 = 2 × CP_SCALE).
     int32_t psqt_out = acc.psqt[stm][stack] - acc.psqt[stm ^ 1][stack];
 
     int score = network_out / NNUE_CP_SCALE + psqt_out / NNUE_PSQT_SCALE;
+    if (getenv("NNUE_DEBUG"))
+        fprintf(stderr, "NNUE_DEBUG: stack=%d net=%d(->%d) psqt=%d(->%d) total=%d\n",
+                stack, network_out, network_out/NNUE_CP_SCALE,
+                psqt_out, psqt_out/NNUE_PSQT_SCALE, score);
     return score;
 }

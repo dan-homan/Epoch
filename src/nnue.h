@@ -1,14 +1,14 @@
 // EXchess NNUE evaluation — HalfKAv2_hm format (Stockfish 15/16 era)
 //
-// Architecture (determined empirically from file structure):
+// Architecture (confirmed from file structure — each stack is 50,408 bytes):
 //   Features = HalfKAv2_hm — king-square bucket × all-piece-square
 //   Feature space : 22,528  (32 king-buckets × 704 piece-sq indices)
 //   Accumulator   : 1024 int16 per perspective  +  8 int32 PSQT per perspective
 //   Network       : 8 layer-stacks (selected by material count), each:
-//     - FC0: 3072 → 16  (3072 = 2 × 1536 dual-activation output per side)
-//     - FC1: 30   → 32  (30 = 15 CReLU + 15 SqrCReLU from FC0 outputs 0-14)
-//     - FC2: 32   → 1   (output; FC0 output-15 adds directly)
-//   PSQT : accumulated separately; blended with network output
+//     - FC0: 3,072 → 16  (dual-activation: 512 SqrCReLU + 1024 CReLU per side = 1536×2)
+//     - FC1: 30   → 32  (30 = 15 SqrCReLU + 15 CReLU from FC0 outputs 0-14)
+//     - FC2: 32   → 1   (output; FC0 output-15 adds via passthrough)
+//   PSQT : accumulated separately; Stockfish applies (stm-opp)/2; blended with net
 //
 // Compatible net: nn-ae6a388e4a1a.nnue (official-stockfish/networks)
 
@@ -25,7 +25,7 @@ static const int NNUE_FT_INPUTS    = 22528; // 32 king-buckets × 704 piece-sq
 static const int NNUE_LAYER_STACKS = 8;     // separate nets per material bucket
 static const int NNUE_PSQT_BKTS   = 8;     // PSQT buckets (== LAYER_STACKS)
 
-// FC0: sparse-input affine (dual-activation input: 1536 per side × 2 sides)
+// FC0: dual-activation input (SqrCReLU + CReLU per perspective × 2 sides)
 static const int NNUE_L0_SIZE     = 16;   // FC0 output neurons (incl. direct-out)
 static const int NNUE_L0_DIRECT   = 15;   // FC0 outputs going through activations
 static const int NNUE_L0_INPUT    = 3072; // = 2 × (512 sqr + 1024 clip) per side
@@ -42,24 +42,37 @@ static const int NNUE_FT_SHIFT     = 6;   // FT: int16 >> 6 → [0,127] int8
 static const int NNUE_WEIGHT_SHIFT = 6;   // FC weights: accumulator >> 6 → [0,127]
 static const int NNUE_SQR_SHIFT    = 7;   // SqrCReLU: (v*v) >> 7 → [0,127]
 // Scale to convert raw network output to EXchess internal units (pawn=100):
-//   The FC0 passthrough (output 15) must be right-shifted by WEIGHT_SHIFT (÷64)
-//   before adding to the FC2 output — same reduction applied to outputs 0-14.
-//   After that shift, network_out / 128 gives EXchess centipawns.
-//   PSQT: empirically calibrated — one pawn contributes ~6500 PSQT units;
-//   dividing by 64 gives ~100 cp per pawn.  The "÷2 per perspective" that
-//   Stockfish applies internally is already baked into the stored weight values.
+//   NNUE_CP_SCALE: empirically calibrated — network_out / 128 → EXchess centipawns.
+//   PSQT: Stockfish computes (stm_psqt - opp_psqt) / 2 then scales.
+//   EXchess accumulates the full diff without ÷2, so NNUE_PSQT_SCALE accounts for
+//   the missing factor of 2: NNUE_PSQT_SCALE = 128 (was 64, fixing 2× PSQT overcount).
 static const int NNUE_CP_SCALE     = 128; // network_out / 128 → EXchess centipawns
-static const int NNUE_PSQT_SCALE   =  64; // psqt_out / 64  → EXchess centipawns
+static const int NNUE_PSQT_SCALE   = 128; // psqt_diff / 128 → EXchess centipawns (includes ÷2)
 
 // ---------------------------------------------------------------------------
-// Accumulator (one per search node, copied from parent then updated)
+// Accumulator (one per search node, lazily updated)
 // ---------------------------------------------------------------------------
 struct NNUEAccumulator {
     int16_t acc [2][NNUE_HALF_DIMS];  // [perspective][unit]  WHITE=1, BLACK=0
     int32_t psqt[2][NNUE_PSQT_BKTS]; // [perspective][bucket]
-    bool    dirty[2];                 // true → full refresh needed
+    bool    dirty[2];                 // true → full refresh needed (legacy fallback)
 
-    NNUEAccumulator() { dirty[0] = dirty[1] = true; }
+    // Lazy evaluation: instead of copying and updating at every node, each node
+    // records only the feature-index deltas from its parent.  The full accumulator
+    // is materialised (via nnue_apply_delta) only when score_pos is actually called.
+    bool    computed;           // true → acc[][] is fully up-to-date
+    int     add[2][4];          // per-perspective feature indices to add (max 4)
+    int     sub[2][4];          // per-perspective feature indices to subtract (max 4)
+    int8_t  n_add[2];           // count of adds per perspective
+    int8_t  n_sub[2];           // count of subs per perspective
+    bool    need_refresh[2];    // true → perspective needs full rebuild (king moved)
+
+    NNUEAccumulator() {
+        dirty[0] = dirty[1] = true;
+        computed = true;
+        n_add[0] = n_add[1] = n_sub[0] = n_sub[1] = 0;
+        need_refresh[0] = need_refresh[1] = false;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -73,11 +86,27 @@ bool nnue_load(const char *path);
 // Full accumulator refresh from the current position.
 void nnue_init_accumulator(NNUEAccumulator &acc, const struct position &pos);
 
-// Incremental update after exec_move (copy-make search style).
+// Incremental update after exec_move (eager copy-make; kept for reference).
 void nnue_update_accumulator(NNUEAccumulator &next_acc,
                              const struct position &before,
                              const struct position &after,
                              union move mv);
+
+// Record feature-index deltas for a move without touching ft_weights.
+// Fills acc.add/sub/n_add/n_sub/need_refresh and sets acc.computed = false.
+// Call after exec_move with before=pre-move pos and after=post-move pos.
+void nnue_record_delta(NNUEAccumulator &acc,
+                       const struct position &before,
+                       const struct position &after,
+                       union move mv);
+
+// Materialise a lazy accumulator from the parent's computed accumulator.
+// Copies parent_acc for each non-refresh perspective and applies the stored
+// deltas; rebuilds from scratch for need_refresh perspectives.
+// Sets acc.computed = true on return.
+void nnue_apply_delta(NNUEAccumulator &acc,
+                      const NNUEAccumulator &parent_acc,
+                      const struct position &pos);
 
 // Forward pass. Returns centipawns from side-to-move's perspective.
 // piece_count: total pieces on board (for layer-stack selection).

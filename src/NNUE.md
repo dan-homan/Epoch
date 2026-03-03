@@ -53,7 +53,7 @@ is the king square after rank-flip for the BLACK perspective.
 | Constant | Value | Meaning |
 |----------|-------|---------|
 | `NNUE_CP_SCALE` | 128 | `network_out / 128` → EXchess centipawns |
-| `NNUE_PSQT_SCALE` | 64 | `psqt_out / 64` → EXchess centipawns (≈ 6,527 PSQT units per pawn) |
+| `NNUE_PSQT_SCALE` | 128 | `psqt_out / 128` → EXchess centipawns; Stockfish divides (stm−opp)/2 before scaling, EXchess accumulates full diff so scale×2 compensates |
 | `NNUE_FT_SHIFT` | 6 | int16 accumulator → int8 input for dual-activation |
 | `NNUE_SQR_SHIFT` | 7 | SqrCReLU product right-shift (max product = 127²=16,129 → ≤ 126) |
 | `NNUE_WEIGHT_SHIFT` | 6 | FC layer outputs → [0, 127] int8 range |
@@ -121,6 +121,25 @@ engine searched a position and then the game advanced to a new position, the sta
 accumulator values from the previous position would be silently reused (dirty flags were
 still `false` from the previous search).
 
+### 5. Lazy accumulator evaluation (+17% NPS, ~720K → ~840K)
+
+`nnue_apply_delta` replaces the temporary full-refresh stub with true one-level-lazy
+incremental evaluation.  The search wiring was already in place (v2026_03_02b added
+`nnue_record_delta` calls at all `exec_move` sites and the `nnue_apply_delta` guard before
+`score_pos`); this optimization completes the implementation.
+
+**At every `exec_move`:** `nnue_record_delta` stores ≤4 feature-index integers per
+perspective into `acc.add/sub` arrays (no `ft_weights` access) and sets `acc.computed=false`.
+
+**At `score_pos` time only:** `nnue_apply_delta` copies the parent's accumulator (2KB per
+perspective) and applies the stored deltas via `add_feat`/`sub_feat`.  For king moves
+(`need_refresh[p]=true`), the king's own perspective is rebuilt from scratch; the opponent
+perspective is still incremental.
+
+Cut nodes — roughly 58% of all nodes — now pay only a handful of integer assignments
+instead of a 4KB copy plus 1K `add_feat`/`sub_feat` calls into the 46 MB `ft_weights`
+table.
+
 ---
 
 ## NPS Benchmarks
@@ -134,9 +153,12 @@ still `false` from the previous search).
 | v2026_03_01c | 645,539 | + score hash (+22%) |
 | v2026_03_01e | 691,200 | + score hash + vdotq FC0 (+31% total) |
 | v2026_03_02b | ~720,000 | + NEON dual-act + vdotq FC1 + root dirty fix (+36% total) |
+| v2026_03_02c | ~840,000 | + lazy accumulator (+59% vs baseline, +17% vs 02b) |
+| v2026_03_02e | ~844,000 | + root premove_score uses NNUE accumulator (correctness fix, ~0% NPS) |
+| v2026_03_02f | ~870,000 | + singular-extension accumulator fix (correctness, ~0% NPS) |
 
-Remaining gap vs. classical: **~2.3×**.  At a 1-minute time control the NNUE version
-typically searches approximately 2 plies shallower than the classical version.
+Remaining gap vs. classical: **~1.96×**.  At a 1-minute time control the NNUE version
+typically searches approximately 1–2 plies shallower than the classical version.
 
 ---
 
@@ -144,49 +166,54 @@ typically searches approximately 2 plies shallower than the classical version.
 
 ### High priority
 
-#### 1. Eager copy-make for the accumulator (primary remaining speed bottleneck)
+#### 1. Lazy accumulator — DONE (v2026_03_02c)
 
-The current search uses copy-make for the accumulator identical to the position:
+`nnue_apply_delta` now implements true one-level-lazy incremental evaluation:
+- `nnue_record_delta` (called at every `exec_move`) records only the feature-index changes
+  (a few integers) without touching `ft_weights`.
+- `nnue_apply_delta` (called only when `score_pos` is needed) copies the parent's
+  already-computed accumulator and applies the stored add/sub deltas (one `memcpy` +
+  ≤4 `add_feat`/`sub_feat` calls per perspective).  For king moves, the king's own
+  perspective is rebuilt from scratch (`need_refresh=true`); the opponent's perspective
+  is incremental.
+- All cut nodes (~58% of nodes) now pay only the cost of `nnue_record_delta` (a few
+  integer assignments) instead of a 4KB copy + `ft_weights` access.
+- Correctness verified: bit-for-bit identical PV moves and scores at every depth vs 02b.
+
+#### 2. Evaluation correctness — ACTIVE BUG (as of 2026-03-02)
+
+**All NNUE builds (v2026_03_01b through v2026_03_02g) play catastrophically vs classical
+(0 wins in 20 games, ~−511 Elo).**
+
+PGN analysis of game 1 (v2026_03_02f, NNUE=White) shows a distinctive pattern:
+- Move 11: NNUE≈+0.23, classical≈+0.23 — identical at the symmetric opening
+- Move 25: NNUE=−0.20, classical=+0.78 — 0.58 pawn gap, divergence beginning
+- Move 29: NNUE=+0.15, classical=+2.01 — NNUE thinks it's ahead when 2 pawns down!
+- Move 34: NNUE=+0.06, classical=+5.37 — **5.43 pawn discrepancy**
+
+The monotonically growing error (small at symmetric start, huge in asymmetric endgame)
+is the hallmark of **evaluation drift** rather than a constant calibration error.
+
+**PSQT scale fix (NNUE_PSQT_SCALE 64→128) did not help** — match result still 0-19-1.
+
+**Leading hypothesis: feature ordering mismatch or incorrect orient/flip logic in
+`halfkav2_feature`.**  The EXchess implementation uses piece-major ordering:
 
 ```cpp
-next->pos = pos;          // 256 bytes
-next->acc = acc;          // 4,162 bytes  ← 16× more data
-exec_move(smove, ply);
-nnue_update_accumulator(next->acc, pos, next->pos, smove);  // ft_weights access
+ps = (ptype - 1) * 128 + (is_own ? 0 : 64);
+feature = bucket + ps + psq_o;
 ```
 
-Both the 4KB copy **and** the `nnue_update_accumulator` call (which accesses the 46 MB
-`ft_weights` table) happen at **every node**, even nodes that are cut off by alpha-beta or
-the hash table before evaluation is ever called.  In the benchmark above, only ~42% of
-nodes actually call `nnue_evaluate`; the remaining ~58% do useless accumulator work.
+If this doesn't exactly match the storage order used when the network was trained
+(Stockfish source: `(pc_type * 2 + (pc_color != persp)) * SQUARE_NB + oriented_sq`),
+features are activating the wrong weight rows.  Starting positions are ~symmetric so
+errors partially cancel; they compound as the position becomes asymmetric.
 
-**Fix: lazy accumulator evaluation.**  Instead of copying and updating the accumulator at
-every node, only record the feature-index changes (a few integers per move).  Materialise
-the accumulator only when `score_pos` is actually called, by walking back to the nearest
-already-computed ancestor and applying the buffered deltas.  This eliminates the 4KB copy
-and `ft_weights` access at all cut nodes (~58% of nodes in this benchmark), potentially
-yielding a further 20–35% NPS improvement.
-
-This is the standard approach in Stockfish (SfKA lazy accumulator, introduced ~2022) and
-is the most impactful remaining optimisation.
-
-#### 2. Incremental accumulator drift (correctness investigation pending)
-
-When a "dirty-check" optimisation was attempted (skipping the full refresh of the
-non-dirty perspective in `nnue_init_accumulator`), the search produced measurably
-different results (different extension counts, null-cut counts, and PV lines).  The
-observed signature — more extensions, fewer null-move cutoffs, slightly different scores —
-is consistent with small errors accumulating in the incrementally updated perspective over
-many nodes, errors which the current "always refresh both perspectives" behaviour
-silently corrects.
-
-The root cause has not been isolated.  Suspect areas:
-- `halfkav2_feature()` returning inconsistent indices under some move type/orientation combination
-- Integer overflow in the int16 accumulator under unusual material configurations
-
-Until this is resolved, `nnue_init_accumulator` should continue to refresh **both**
-perspectives whenever called (current behaviour).  A future fix could enable the
-dirty-check optimisation, saving roughly half the lazy-refresh work.
+**Next steps (to investigate 2026-03-09):**
+1. Verify Stockfish's actual `make_index` formula against our implementation
+2. Cross-check `orient` flag: `(ksq_f & 7) < 4 ? 7 : 0` (file-flip) vs Stockfish
+3. Add accumulator validation: lazy-delta vs full-refresh at mid-game positions
+4. Verify opponent-king feature slot (ps=640): does Stockfish map it the same way?
 
 ### Medium priority
 
