@@ -67,9 +67,9 @@ static const int KingBuckets[64] = {
 static inline int halfkav2_feature(int persp, int ksq,
                                    int psq,  int ptype, int pside)
 {
-    // Own king selects the bucket only — it is NOT a feature.
-    if (ptype == KING && pside == persp)
-        return -1;
+    // Note: own king IS included as a feature (same PS_KING slot as enemy king).
+    // Both kings map to PS_KING=640; the own king's feature index is valid and
+    // contributes to the accumulator.  Only excluded: no-piece (ptype == 0).
 
     int flip   = (persp == BLACK) ? 56 : 0;
     int ksq_f  = ksq ^ flip;
@@ -732,14 +732,23 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
     //    fc1_in[0..14]  = SqrCReLU(fc0_raw[0..14])
     //    fc1_in[15..29] = CReLU(fc0_raw[0..14])
     //    fc1_in[30..31] = 0 (padding)
+    //
+    //    Stockfish SqrClippedReLU (sqr_clipped_relu.h):
+    //      output = clamp(0, 127, (input * input) >> (2*WeightScaleBits + SqrShift))
+    //             = clamp(0, 127, fc0^2 >> 19)
+    //    Squaring the raw int32 value before clamping is essential — negative inputs
+    //    produce non-zero squared outputs.  Clamping BEFORE squaring (old code) was
+    //    wrong because it zeroed all negative fc0 values.
     int8_t fc1_in[NNUE_L1_PADDED];
     memset(fc1_in, 0, sizeof(fc1_in));
     for (int o = 0; o < NNUE_L0_DIRECT; o++) {
+        // SqrCReLU: square raw value (works for negative), shift by 2*6+7=19, clamp
+        int64_t sq64 = (int64_t)fc0_raw[o] * fc0_raw[o] >>
+                       (2 * NNUE_WEIGHT_SHIFT + NNUE_SQR_SHIFT);
+        fc1_in[o] = (int8_t)(sq64 > 127 ? 127 : sq64);
+        // CReLU: shift and clamp to [0, 127]
         int v = fc0_raw[o] >> NNUE_WEIGHT_SHIFT;
-        if (v < 0) v = 0; else if (v > 127) v = 127;
-        int sq = (v * v) >> NNUE_SQR_SHIFT;
-        fc1_in[o]                  = (int8_t)(sq > 127 ? 127 : sq);  // SqrCReLU
-        fc1_in[NNUE_L0_DIRECT + o] = (int8_t)v;                       // CReLU
+        fc1_in[NNUE_L0_DIRECT + o] = (int8_t)(v < 0 ? 0 : v > 127 ? 127 : v);
     }
 
     // 4. FC1: 30(→32 padded) → 32
@@ -801,16 +810,14 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
     int32_t positional = fc2_out + fwdOut;
 
     // 7. PSQT + final score
-    //    PSQT scale: empirically confirmed = 32 (gives queen~900 cp).
-    //    Positional scale: separate, tunable via NNUE_POS_SCALE (default 128).
-    //    Motivation: Stockfish formula uses one OutputScale=16 for both, but
-    //    with EXchess centipawns (no NormalizeToPawnValue normalization),
-    //    the positional term needs a ~4× larger denominator than PSQT.
+    //    Stockfish: value = (psqt_diff/2 + positional) / OutputScale(16)  [internal Value units]
+    //    To convert to centipawns: * 100 / NormalizeToPawnValue(361)
+    //    Combined: * 100 / (16 * 361) = * 100 / 5776
     int32_t psqt_diff = acc.psqt[stm][stack] - acc.psqt[stm ^ 1][stack];
 #ifdef NNUE_PSQT_ONLY
-    int score = (psqt_diff / 2) / NNUE_OUTPUT_SCALE;
+    int score = (int32_t)((int64_t)(psqt_diff / 2) * 100 / 5776);
 #else
-    int score = (psqt_diff / 2) / NNUE_OUTPUT_SCALE + positional / NNUE_POS_SCALE;
+    int score = (int32_t)((int64_t)(psqt_diff / 2 + positional) * 100 / 5776);
 #endif
 
     if (getenv("NNUE_DEBUG"))
