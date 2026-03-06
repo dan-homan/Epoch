@@ -52,7 +52,7 @@ int position::score_pos(game_rec *gr, ts_thread_data *tdata NNUE_ACC_DEF)
        }
      }
      // Refresh any dirty accumulator halves (king moved in this subtree)
-     if (nnue_acc->dirty[WHITE] || nnue_acc->dirty[BLACK])
+     if (1 || nnue_acc->dirty[WHITE] || nnue_acc->dirty[BLACK])
        nnue_init_accumulator(*nnue_acc, *this);
      int pc = 2;  // two kings
      for (int s = 0; s < 2; s++)

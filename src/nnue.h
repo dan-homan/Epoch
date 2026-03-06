@@ -41,11 +41,15 @@ static const int NNUE_L2_PADDED   = 32;   // padded input dim for FC2
 // Quantization scales
 static const int NNUE_WEIGHT_SHIFT = 6;   // FC weights: raw >> 6 → [0,127] int8
 static const int NNUE_SQR_SHIFT    = 7;   // SqrCReLU: (v*v) >> 7 → [0,127]
-// Stockfish 15.1 output formula: score = (psqt_diff/2 + positional) / OutputScale
-// where OutputScale = 16 (matches Stockfish nnue_architecture.h)
+// Stockfish 15.1 output formula (internal Value units):
+//   value = (psqt_diff/2 + positional) / OutputScale   (OutputScale=16)
+// To convert Stockfish Value → EXchess centipawns multiply by 100/NormalizeToPawnValue
+//   where NormalizeToPawnValue = 361 (from Stockfish uci.h).
+// Combined denominator: OutputScale * NormalizeToPawnValue / 100 = 16 * 3.61 ≈ 58.
 // Passthrough (FC0 output 15): fwdOut = fc0_raw[15] * 9600 / 8128
 //   (600 * OutputScale) / (127 * WeightScaleBits=64) = 9600/8128
-static const int NNUE_OUTPUT_SCALE = 16;  // Stockfish OutputScale
+static const int NNUE_OUTPUT_SCALE = 32;  // PSQT scale: empirically confirmed for correct piece values
+static const int NNUE_POS_SCALE    = 128; // Positional (FC layers) scale: ~4× PSQT to match EXchess cp
 
 // ---------------------------------------------------------------------------
 // Accumulator (one per search node, lazily updated)

@@ -735,13 +735,50 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
     int32_t fwdOut = (int32_t)((int64_t)fc0_raw[NNUE_L0_DIRECT] * 9600 / 8128);
     int32_t positional = fc2_out + fwdOut;
 
-    // 7. PSQT + final score (Stockfish 15.1 exact formula):
-    //    score = (psqt_diff/2 + positional) / OutputScale
+    // 7. PSQT + final score
+    //    PSQT scale: empirically confirmed = 32 (gives queen~900 cp).
+    //    Positional scale: separate, tunable via NNUE_POS_SCALE (default 128).
+    //    Motivation: Stockfish formula uses one OutputScale=16 for both, but
+    //    with EXchess centipawns (no NormalizeToPawnValue normalization),
+    //    the positional term needs a ~4× larger denominator than PSQT.
     int32_t psqt_diff = acc.psqt[stm][stack] - acc.psqt[stm ^ 1][stack];
-    int score = (psqt_diff / 2 + positional) / NNUE_OUTPUT_SCALE;
+#ifdef NNUE_PSQT_ONLY
+    int score = (psqt_diff / 2) / NNUE_OUTPUT_SCALE;
+#else
+    int score = (psqt_diff / 2) / NNUE_OUTPUT_SCALE + positional / NNUE_POS_SCALE;
+#endif
 
     if (getenv("NNUE_DEBUG"))
         fprintf(stderr, "NNUE_DEBUG: stack=%d fc2=%d fwd=%d positional=%d psqt_diff=%d total=%d\n",
                 stack, fc2_out, fwdOut, positional, psqt_diff, score);
+
+    if (getenv("NNUE_DEBUG_VERBOSE")) {
+        fprintf(stderr, "NNUE_VERBOSE: stack=%d stm=%d pc=%d\n", stack, stm, piece_count);
+        // Raw accumulator (first 16 of each perspective)
+        fprintf(stderr, "  acc[stm][0..15]:");
+        for (int i = 0; i < 16; i++) fprintf(stderr, " %d", (int)acc.acc[stm][i]);
+        fprintf(stderr, "\n  acc[opp][0..15]:");
+        for (int i = 0; i < 16; i++) fprintf(stderr, " %d", (int)acc.acc[stm^1][i]);
+        fprintf(stderr, "\n");
+        // FT activation output — print all non-zero values
+        fprintf(stderr, "  l0_in nonzero:");
+        for (int i = 0; i < NNUE_L0_INPUT; i++)
+            if (l0_in[i]) fprintf(stderr, " [%d]=%d", i, (int)l0_in[i]);
+        fprintf(stderr, "\n");
+        // FC0 raw outputs
+        fprintf(stderr, "  fc0_raw[0..15]:");
+        for (int i = 0; i < NNUE_L0_SIZE; i++) fprintf(stderr, " %d", fc0_raw[i]);
+        fprintf(stderr, "\n");
+        // FC1 inputs (all 30 active + 2 padding)
+        fprintf(stderr, "  fc1_in[0..31] (sqr|clip|pad):");
+        for (int i = 0; i < NNUE_L1_PADDED; i++) fprintf(stderr, " %d", (int)fc1_in[i]);
+        fprintf(stderr, "\n");
+        // FC2 inputs (FC1 CReLU outputs)
+        fprintf(stderr, "  fc2_in[0..31]:");
+        for (int i = 0; i < NNUE_L1_SIZE; i++) fprintf(stderr, " %d", (int)fc2_in[i]);
+        fprintf(stderr, "\n");
+        fprintf(stderr, "  fc2_out=%d fwdOut=%d positional=%d psqt_diff=%d score=%d\n",
+                fc2_out, fwdOut, positional, psqt_diff, score);
+    }
     return score;
 }
