@@ -1,14 +1,14 @@
 // EXchess NNUE evaluation — HalfKAv2_hm format (Stockfish 15/16 era)
 // Written from scratch; Stockfish source consulted only for file-format layout.
 //
-// File format confirmed from nn-ae6a388e4a1a.nnue (Stockfish 15.1):
+// File format confirmed from nn-ad9b42354671.nnue (Stockfish 15.1 exact release):
 //   [Header] version(4) + hash(4) + desc_size(4) + desc(N)
 //   [FT]     ft_hash(4) + LEB128(biases 1024 i16) + LEB128(weights 22528×1024 i16)
 //             + LEB128(psqt 22528×8 i32)
-//   [Stacks] 8 × [stack_hash(4) + FC0_bias(16×i32) + FC0_wt(16×3072×i8)
+//   [Stacks] 8 × [stack_hash(4) + FC0_bias(16×i32) + FC0_wt(16×1024×i8)
 //                               + FC1_bias(32×i32) + FC1_wt(32×32×i8)
 //                               + FC2_bias(1×i32)  + FC2_wt(32×i8)]
-//   Each stack = 4+64+49152+128+1024+4+32 = 50408 bytes
+//   Each stack = 4+64+16384+128+1024+4+32 = 17640 bytes
 //   (no separate net_hash; the FT section ends immediately before stack 0's hash)
 
 #include <stdint.h>
@@ -263,7 +263,7 @@ bool nnue_load(const char *path)
         {
             // Read output-major [o * NNUE_L0_INPUT + i] into a temp buffer,
             // then rearrange into the vdotq-friendly layout:
-            //   For each 4-input block ib (0..767) and 4-output block ob (0..3),
+            //   For each 4-input block ib (0..255) and 4-output block ob (0..3),
             //   store 16 bytes as [w(i0,o0),w(i1,o0),w(i2,o0),w(i3,o0),
             //                      w(i0,o1),w(i1,o1),w(i2,o1),w(i3,o1), ...]
             //   i.e. l0_weights[s][ib*64 + ob*16 + k*4 + j]
@@ -545,20 +545,20 @@ void nnue_apply_delta(NNUEAccumulator &acc,
 }
 
 // ---------------------------------------------------------------------------
-// nnue_evaluate — forward pass → centipawns from stm's perspective
+// nnue_evaluate — forward pass → score from stm's perspective
 //
-// Input preparation (dual activation — "paired CReLU"):
+// Input preparation (SqrCReLU — Stockfish 15.1 exact):
 //   For each perspective (stm, opp), from NNUE_HALF_DIMS=1024 int16 accumulator:
-//     - SqrCReLU on pairs (acc[i], acc[i+512]) for i=0..511:
-//         a = clamp(acc[i]>>FT_SHIFT, 0, 127)
-//         b = clamp(acc[i+512]>>FT_SHIFT, 0, 127)
-//         sqr[i] = clamp((a*b)>>SQR_SHIFT, 0, 127)
-//     - CReLU on all 1024: clip[i] = clamp(acc[i]>>FT_SHIFT, 0, 127)
-//     - Per-side output: [sqr[0..511] | clip[0..1023]] = 1536 int8 values
-//   Total FC0 input: [stm_1536 | opp_1536] = 3072 int8 values
+//     - Clamp acc[i] and acc[i+512] directly to [0, 127] (NO right-shift)
+//     - SqrCReLU on pairs for i=0..511:
+//         a = clamp(acc[i],       0, 127)
+//         b = clamp(acc[i+512],   0, 127)
+//         out[i] = (a*b) >> SQR_SHIFT   (≤ 127, no overflow)
+//     - No CReLU part — only 512 values per perspective
+//   Total FC0 input: [stm_512 | opp_512] = 1024 int8 values
 //
-// FC0 (16 outputs, output-major weights 16×3072):
-//   raw[o] = bias[o] + dot(l0_in, weights[o*3072 .. (o+1)*3072-1])
+// FC0 (16 outputs, output-major weights 16×1024):
+//   raw[o] = bias[o] + dot(l0_in, weights[o*1024 .. (o+1)*1024-1])
 //
 // Dual activation of FC0 outputs 0..14:
 //   v = clamp(raw[o]>>WEIGHT_SHIFT, 0, 127)
@@ -578,65 +578,53 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
     if (piece_count > 32) piece_count = 32;
     int stack = (piece_count - 1) / 4;  // 0..7
 
-    // 1. Dual activation: produce 3072 int8 values
-    //    Layout: [stm_sqr(0..511) | stm_clip(0..1023) | opp_sqr(0..511) | opp_clip(0..1023)]
+    // 1. SqrCReLU activation: produce 1024 int8 values
+    //    Layout: [stm_sqr(0..511) | opp_sqr(0..511)]
+    //    Accumulator int16 clamped directly to [0,127] — no right-shift.
     int8_t l0_in[NNUE_L0_INPUT];
     const int16_t *persp_acc[2] = { acc.acc[stm], acc.acc[stm ^ 1] };
 
-    // Fused dual-activation: SqrCReLU(a[0..511], a[512..1023]) → out[0..511]
-    //                         CReLU(a[0..511])                   → out[512..1023]
-    //                         CReLU(a[512..1023])                → out[1024..1535]
-    // One pass reads each half of the accumulator exactly once per perspective.
 #ifdef __ARM_NEON
     {
-        const int16x8_t zero16   = vdupq_n_s16(0);
+        const int16x8_t zero16    = vdupq_n_s16(0);
         const int16x8_t max127_16 = vdupq_n_s16(127);
         for (int p = 0; p < 2; p++) {
             const int16_t *a = persp_acc[p];
-            int8_t *out = l0_in + p * 1536;
+            int8_t *out = l0_in + p * 512;
             for (int i = 0; i < 512; i += 8) {
-                int16x8_t va16 = vshrq_n_s16(vld1q_s16(a + i),       6); // FT_SHIFT=6
-                int16x8_t vb16 = vshrq_n_s16(vld1q_s16(a + i + 512), 6);
-                int16x8_t va_c = vminq_s16(vmaxq_s16(va16, zero16), max127_16);
-                int16x8_t vb_c = vminq_s16(vmaxq_s16(vb16, zero16), max127_16);
+                // Clamp directly to [0,127] — no >> 6 shift
+                int16x8_t va_c = vminq_s16(vmaxq_s16(vld1q_s16(a + i),       zero16), max127_16);
+                int16x8_t vb_c = vminq_s16(vmaxq_s16(vld1q_s16(a + i + 512), zero16), max127_16);
                 int8x8_t  va8  = vmovn_s16(va_c);
                 int8x8_t  vb8  = vmovn_s16(vb_c);
                 // SqrCReLU: max product = 127*127=16129, >>7 = 126 ≤ 127, no clamp needed
                 int8x8_t  sq8  = vmovn_s16(vshrq_n_s16(vmull_s8(va8, vb8), 7)); // SQR_SHIFT=7
-                vst1_s8(out + i,        sq8); // SqrCReLU → [0..511]
-                vst1_s8(out + 512 + i,  va8); // CReLU(a[0..511]) → [512..1023]
-                vst1_s8(out + 1024 + i, vb8); // CReLU(a[512..1023]) → [1024..1535]
+                vst1_s8(out + i, sq8); // SqrCReLU → [0..511]
             }
         }
     }
 #else
     for (int p = 0; p < 2; p++) {
         const int16_t *a = persp_acc[p];
-        int8_t *out = l0_in + p * 1536;
+        int8_t *out = l0_in + p * 512;
 
-        // SqrCReLU on pairs (i, i+512)
+        // SqrCReLU on pairs (i, i+512) — clamp directly, no shift
         for (int i = 0; i < 512; i++) {
-            int va = (int)a[i]       >> NNUE_FT_SHIFT;
-            int vb = (int)a[i + 512] >> NNUE_FT_SHIFT;
+            int va = (int)a[i];
+            int vb = (int)a[i + 512];
             if (va < 0) va = 0; else if (va > 127) va = 127;
             if (vb < 0) vb = 0; else if (vb > 127) vb = 127;
             int sq = (va * vb) >> NNUE_SQR_SHIFT;
             out[i] = (int8_t)(sq > 127 ? 127 : sq);
         }
-
-        // CReLU on all 1024
-        for (int i = 0; i < NNUE_HALF_DIMS; i++) {
-            int v = (int)a[i] >> NNUE_FT_SHIFT;
-            out[512 + i] = (int8_t)(v < 0 ? 0 : v > 127 ? 127 : v);
-        }
     }
 #endif
 
-    // 2. FC0: 3072 → 16
+    // 2. FC0: 1024 → 16
     //    Weights are stored in vdotq-friendly layout (set at load time):
     //      wt[ib*64 + ob*16 + k*4 + j]  where ib=i/4, j=i%4, ob=o/4, k=o%4
     //    Each loop iteration processes 4 consecutive inputs against all 16 outputs
-    //    via 4 vdotq_s32 calls — 768 iterations total (vs 16×768 per-output).
+    //    via 4 vdotq_s32 calls — 256 iterations total (vs 16×256 per-output).
     int32_t fc0_raw[NNUE_L0_SIZE];
     {
         const int32_t *bias = l0_biases[stack];
@@ -737,22 +725,23 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
     }
 
     // 5. FC2 (output): 32 → 1
-    //    FC0 output 15 (passthrough) is right-shifted by WEIGHT_SHIFT (÷64) to match
-    //    the scale of the FC2 dot product — same reduction as outputs 0-14 undergo
-    //    before entering FC1.
-    int32_t network_out = out_biases[stack];
-    network_out += fc0_raw[NNUE_L0_DIRECT] >> NNUE_WEIGHT_SHIFT;  // passthrough ÷64
+    int32_t fc2_out = out_biases[stack];
     for (int i = 0; i < NNUE_L2_PADDED; i++)
-        network_out += (int32_t)fc2_in[i] * (int32_t)out_weights[stack][i];
+        fc2_out += (int32_t)fc2_in[i] * (int32_t)out_weights[stack][i];
 
-    // 6. PSQT contribution for the selected stack
-    //    Stockfish divides (stm - opp) by 2; NNUE_PSQT_SCALE compensates (128 = 2 × CP_SCALE).
-    int32_t psqt_out = acc.psqt[stm][stack] - acc.psqt[stm ^ 1][stack];
+    // 6. Passthrough: FC0 output 15 is scaled and added to FC2 result.
+    //    Stockfish formula: fwdOut = fc0_raw[15] * (600*OutputScale) / (127*WeightScaleBits)
+    //                              = fc0_raw[15] * 9600 / 8128
+    int32_t fwdOut = (int32_t)((int64_t)fc0_raw[NNUE_L0_DIRECT] * 9600 / 8128);
+    int32_t positional = fc2_out + fwdOut;
 
-    int score = network_out / NNUE_CP_SCALE + psqt_out / NNUE_PSQT_SCALE;
+    // 7. PSQT + final score (Stockfish 15.1 exact formula):
+    //    score = (psqt_diff/2 + positional) / OutputScale
+    int32_t psqt_diff = acc.psqt[stm][stack] - acc.psqt[stm ^ 1][stack];
+    int score = (psqt_diff / 2 + positional) / NNUE_OUTPUT_SCALE;
+
     if (getenv("NNUE_DEBUG"))
-        fprintf(stderr, "NNUE_DEBUG: stack=%d net=%d(->%d) psqt=%d(->%d) total=%d\n",
-                stack, network_out, network_out/NNUE_CP_SCALE,
-                psqt_out, psqt_out/NNUE_PSQT_SCALE, score);
+        fprintf(stderr, "NNUE_DEBUG: stack=%d fc2=%d fwd=%d positional=%d psqt_diff=%d total=%d\n",
+                stack, fc2_out, fwdOut, positional, psqt_diff, score);
     return score;
 }

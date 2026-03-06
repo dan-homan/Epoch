@@ -153,9 +153,9 @@ int main(int argc, char *argv[])
     // Stockfish 17 SFNNv9 default net (HalfKAv2_hm, ~45 MB compressed)
     // Download from: https://github.com/official-stockfish/networks
     // Try exec directory first, then current directory
-    snprintf(nnue_path, sizeof(nnue_path), "%s%s", exec_path, "nn-ae6a388e4a1a.nnue");
+    snprintf(nnue_path, sizeof(nnue_path), "%s%s", exec_path, "nn-ad9b42354671.nnue");
     if (!nnue_load(nnue_path)) {
-      nnue_load("nn-ae6a388e4a1a.nnue");
+      nnue_load("nn-ad9b42354671.nnue");
     }
     if (nnue_available) write_out("NNUE evaluation loaded.\n");
     else                write_out("NNUE file not found, using classical evaluation.\n");

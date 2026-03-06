@@ -1,16 +1,17 @@
-// EXchess NNUE evaluation — HalfKAv2_hm format (Stockfish 15/16 era)
+// EXchess NNUE evaluation — HalfKAv2_hm format (Stockfish 15.1 exact)
 //
-// Architecture (confirmed from file structure — each stack is 50,408 bytes):
+// Architecture (confirmed from file structure — each stack is 17,640 bytes):
 //   Features = HalfKAv2_hm — king-square bucket × all-piece-square
 //   Feature space : 22,528  (32 king-buckets × 704 piece-sq indices)
 //   Accumulator   : 1024 int16 per perspective  +  8 int32 PSQT per perspective
 //   Network       : 8 layer-stacks (selected by material count), each:
-//     - FC0: 3,072 → 16  (dual-activation: 512 SqrCReLU + 1024 CReLU per side = 1536×2)
+//     - FC0: 1,024 → 16  (SqrCReLU only: 512 per perspective × 2 sides = 1024)
 //     - FC1: 30   → 32  (30 = 15 SqrCReLU + 15 CReLU from FC0 outputs 0-14)
 //     - FC2: 32   → 1   (output; FC0 output-15 adds via passthrough)
-//   PSQT : accumulated separately; Stockfish applies (stm-opp)/2; blended with net
+//   PSQT : accumulated separately; final score = (psqt_diff/2 + positional) / 16
+//   Note: accumulator is NOT shifted before SqrCReLU; clamp directly to [0,127]
 //
-// Compatible net: nn-ae6a388e4a1a.nnue (official-stockfish/networks)
+// Compatible net: nn-ad9b42354671.nnue (Stockfish 15.1 exact release net)
 
 #ifndef NNUE_H
 #define NNUE_H
@@ -25,10 +26,10 @@ static const int NNUE_FT_INPUTS    = 22528; // 32 king-buckets × 704 piece-sq
 static const int NNUE_LAYER_STACKS = 8;     // separate nets per material bucket
 static const int NNUE_PSQT_BKTS   = 8;     // PSQT buckets (== LAYER_STACKS)
 
-// FC0: dual-activation input (SqrCReLU + CReLU per perspective × 2 sides)
+// FC0: SqrCReLU-only input (512 per perspective × 2 sides)
 static const int NNUE_L0_SIZE     = 16;   // FC0 output neurons (incl. direct-out)
 static const int NNUE_L0_DIRECT   = 15;   // FC0 outputs going through activations
-static const int NNUE_L0_INPUT    = 3072; // = 2 × (512 sqr + 1024 clip) per side
+static const int NNUE_L0_INPUT    = 1024; // = 2 × 512 SqrCReLU per side (no CReLU)
 
 // FC1: dense (takes dual-activation of FC0 outputs 0..14 → 15 sqr + 15 clip = 30)
 static const int NNUE_L1_SIZE     = 32;   // FC1 output neurons
@@ -38,16 +39,13 @@ static const int NNUE_L1_PADDED   = 32;   // padded input dim (ceil(30, 16) = 32
 static const int NNUE_L2_PADDED   = 32;   // padded input dim for FC2
 
 // Quantization scales
-static const int NNUE_FT_SHIFT     = 6;   // FT: int16 >> 6 → [0,127] int8
-static const int NNUE_WEIGHT_SHIFT = 6;   // FC weights: accumulator >> 6 → [0,127]
+static const int NNUE_WEIGHT_SHIFT = 6;   // FC weights: raw >> 6 → [0,127] int8
 static const int NNUE_SQR_SHIFT    = 7;   // SqrCReLU: (v*v) >> 7 → [0,127]
-// Scale to convert raw network output to EXchess internal units (pawn=100):
-//   NNUE_CP_SCALE: empirically calibrated — network_out / 128 → EXchess centipawns.
-//   PSQT: Stockfish computes (stm_psqt - opp_psqt) / 2 then scales.
-//   EXchess accumulates the full diff without ÷2, so NNUE_PSQT_SCALE accounts for
-//   the missing factor of 2: NNUE_PSQT_SCALE = 128 (was 64, fixing 2× PSQT overcount).
-static const int NNUE_CP_SCALE     = 128; // network_out / 128 → EXchess centipawns
-static const int NNUE_PSQT_SCALE   = 128; // psqt_diff / 128 → EXchess centipawns (includes ÷2)
+// Stockfish 15.1 output formula: score = (psqt_diff/2 + positional) / OutputScale
+// where OutputScale = 16 (matches Stockfish nnue_architecture.h)
+// Passthrough (FC0 output 15): fwdOut = fc0_raw[15] * 9600 / 8128
+//   (600 * OutputScale) / (127 * WeightScaleBits=64) = 9600/8128
+static const int NNUE_OUTPUT_SCALE = 16;  // Stockfish OutputScale
 
 // ---------------------------------------------------------------------------
 // Accumulator (one per search node, lazily updated)
