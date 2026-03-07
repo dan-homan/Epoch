@@ -1,24 +1,33 @@
 #!/usr/bin/env python3
 """
 tdleaf_selfplay.py — Drive a TDLEAF-enabled EXchess binary in self-play
-to accumulate online TDLeaf(λ) training.
+or versus a fixed reference engine.
 
-Usage (from run/ directory):
-    python3 tdleaf_selfplay.py EXchess_v2026_03_07b_tdleaf -n 200 --tc 1
-    python3 tdleaf_selfplay.py EXchess_v2026_03_07b_tdleaf -n 50 --depth 6
-    python3 tdleaf_selfplay.py EXchess_v2026_03_07b_tdleaf -n 10 --depth 6 --verbose
+Single-engine self-play (both sides same binary):
+    python3 tdleaf_selfplay.py EXchess_v2026_03_07g_tdleaf -n 200 --depth 6
 
-The binary must be built with:
-    perl comp.pl <name> NNUE=1 TDLEAF=1
+Two-engine mode (training engine vs fixed opponent):
+    python3 tdleaf_selfplay.py EXchess_v2026_03_07g_tdleaf -n 200 --depth 8 \\
+        --engine2 EXchess_vtest --depth2 6
+    python3 tdleaf_selfplay.py EXchess_v2026_03_07g_tdleaf -n 200 --depth 8 \\
+        --engine2 EXchess_v2026_03_07a --tc2 1
 
-Run from run/ so that nn-ad9b42354671.nnue and nn-ad9b42354671.tdleaf.bin
-are found in the working directory.
+Engine 1 must be built with NNUE=1 TDLEAF=1.  Engine 2 can be any EXchess binary.
+Scores and wins/losses/draws are always reported from Engine 1's perspective.
+In two-engine mode Engine 1 alternates colors each game so TDLeaf accumulates
+gradients from both White-to-move and Black-to-move positions.
 
-Protocol (xboard, single process):
-    Per game:  new  →  st <tc>  [→ sd <depth>]  →  go
-    Per move:  on seeing "move <uci>" from engine → send "go"
-    Game end:  on seeing "1-0"/"0-1"/"1/2-1/2" → wait for TDLeaf stderr
-               confirmation, then start next game.
+Protocol (xboard):
+    Per game:  new → st <tc> [→ sd <depth>] → go (white engine only)
+    Per move:  on "move <uci>" from active engine → send usermove to the other
+               (EXchess auto-searches after usermove; no explicit 'go' needed)
+    Game end:  result string detected → send "result" to engine 1 → wait for TDLeaf
+
+Time/depth flags:
+    --tc SECS     time per move for engine 1  (default: 1.0)
+    --depth N     max search depth for engine 1 (overrides --tc when set)
+    --tc2 SECS    time per move for engine 2  (default: same as --tc)
+    --depth2 N    max search depth for engine 2 (default: same as --depth)
 """
 
 import argparse
@@ -30,22 +39,13 @@ import threading
 import time
 from queue import Queue, Empty
 
-# Patterns matched against engine stdout.
-# We search() rather than match() because on the very first move of the session
-# the non-xboard prompt ("White-To-Move[1]: ") may be prepended to the move line
-# if the engine printed the prompt before our "xb" arg / "xboard" command was
-# processed.  search() handles both the clean form ("move Nf3") and the prefixed
-# form ("White-To-Move[1]: move Nf3").
 MOVE_RE   = re.compile(r'\bmove\s+(\S+)$')
 RESULT_RE = re.compile(r'\b(1-0|0-1|1/2-1/2)\b')
-# Patterns matched against engine stderr
 TDLEAF_OK = re.compile(r'^TDLeaf: updated weights for (\d+)-ply game')
 TDLEAF_SK = re.compile(r'^TDLeaf: skipping short game \((\d+) plies\)')
 
 
 def reader_thread(stream, q, label):
-    """Read lines from *stream* and put (label, line) tuples onto *q*.
-    Sends (label, None) as a sentinel on EOF."""
     try:
         for line in stream:
             q.put((label, line.rstrip('\n')))
@@ -55,16 +55,14 @@ def reader_thread(stream, q, label):
         q.put((label, None))
 
 
-def send(proc, cmd, verbose=False):
-    """Write a single command line to the engine's stdin."""
+def send(proc, cmd, verbose=False, tag='>>>'):
     if verbose:
-        print(f"  >>> {cmd}", flush=True)
+        print(f'  {tag} {cmd}', flush=True)
     proc.stdin.write(cmd + '\n')
     proc.stdin.flush()
 
 
 def drain(q, timeout=0.15):
-    """Discard everything in *q* for up to *timeout* seconds."""
     deadline = time.monotonic() + timeout
     while True:
         remaining = deadline - time.monotonic()
@@ -76,21 +74,19 @@ def drain(q, timeout=0.15):
             break
 
 
-def start_game(proc, tc, depth, verbose=False):
-    """Send the per-game command sequence."""
-    send(proc, "new", verbose)
-    # max_search_time is an int in EXchess (centiseconds = seconds * 100).
-    # Send as a whole number of seconds; clamp to at least 1 so st 0 doesn't
-    # collapse the time limit to zero.  When --depth is set it dominates anyway.
-    tc_int = max(1, round(tc))
-    send(proc, f"st {tc_int}", verbose)
-    if depth:
-        send(proc, f"sd {depth}", verbose)
-    send(proc, "go", verbose)
+def launch_engine(binary, work_dir):
+    return subprocess.Popen(
+        [binary, 'xb'],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=work_dir,
+        text=True,
+        bufsize=1,
+    )
 
 
 def check_tdleaf_line(line):
-    """Return (plies, skipped) if *line* is a TDLeaf confirmation, else None."""
     m = TDLEAF_OK.match(line)
     if m:
         return int(m.group(1)), False
@@ -100,25 +96,18 @@ def check_tdleaf_line(line):
     return None
 
 
-def wait_for_tdleaf(q, timeout, verbose=False, stderr_buffer=None):
-    """Wait up to *timeout* seconds for a TDLeaf confirmation on stderr.
+def wait_for_tdleaf(q, timeout, verbose=False, stderr_buf=None):
+    """Wait up to *timeout* seconds for a TDLeaf confirmation on e1err.
 
-    *stderr_buffer* is a list of stderr lines already consumed from *q* during
-    the preceding game loop (TDLeaf writes to unbuffered stderr, so its message
-    can arrive before the stdout result line is flushed from the pipe buffer).
-    We check that list first before blocking on the queue.
-
-    Returns (plies, skipped) where:
-      plies   — number of plies updated (int), or None on timeout/no-TDLEAF
-      skipped — True if the game was too short and skipped
+    Checks *stderr_buf* (lines buffered during gameplay) first, then blocks
+    on the shared queue watching for 'e1err' lines.
     """
-    # Check lines already buffered during game play.
-    for line in (stderr_buffer or []):
+    for line in (stderr_buf or []):
         result = check_tdleaf_line(line)
         if result:
             return result
 
-    print(f"  [waiting for TDLeaf — up to {timeout:.0f}s]", flush=True)
+    print(f'  [waiting for TDLeaf — up to {timeout:.0f}s]', flush=True)
     deadline = time.monotonic() + timeout
     found    = False
     plies    = None
@@ -137,10 +126,11 @@ def wait_for_tdleaf(q, timeout, verbose=False, stderr_buffer=None):
             break
 
         if verbose:
-            tag = "OUT" if label == 'out' else "ERR"
-            print(f"  [{tag}] {line}", flush=True)
+            tag = {'e1out': 'E1OUT', 'e1err': 'E1ERR',
+                   'e2out': 'E2OUT', 'e2err': 'E2ERR'}.get(label, label.upper())
+            print(f'  [{tag}] {line}', flush=True)
 
-        if label == 'err':
+        if label == 'e1err':
             result = check_tdleaf_line(line)
             if result:
                 plies, skipped = result
@@ -154,214 +144,257 @@ def main():
     run_dir = os.path.dirname(os.path.abspath(__file__))
 
     parser = argparse.ArgumentParser(
-        description="Self-play TDLeaf training loop for TDLEAF-enabled EXchess.",
+        description='TDLeaf training loop: single-engine self-play or vs reference engine.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
     )
-    parser.add_argument(
-        "binary",
-        help="EXchess binary name (in run/) or absolute path",
-    )
-    parser.add_argument(
-        "-n", "--games", type=int, default=100,
-        help="Number of self-play games (default: 100)",
-    )
-    parser.add_argument(
-        "--tc", type=float, default=1.0,
-        help="Fixed time per move in seconds (default: 1.0)",
-    )
-    parser.add_argument(
-        "--depth", type=int, default=None,
-        help="Max search depth; overrides time control when set (default: off)",
-    )
-    parser.add_argument(
-        "--tdleaf-timeout", type=float, default=15.0,
-        help="Seconds to wait for TDLeaf stderr confirmation per game (default: 15)",
-    )
-    parser.add_argument(
-        "--move-timeout", type=float, default=60.0,
-        help="Seconds to wait for a single engine move before aborting (default: 60)",
-    )
-    parser.add_argument(
-        "--verbose", action="store_true",
-        help="Print all raw engine input/output lines",
-    )
+    parser.add_argument('binary',
+                        help='TDLeaf training engine (engine 1) name or path')
+    parser.add_argument('--engine2', default=None, metavar='BINARY',
+                        help='Reference/opponent engine (engine 2). '
+                             'Omit for single-engine self-play.')
+    parser.add_argument('-n', '--games', type=int, default=100,
+                        help='Number of games (default: 100)')
+    parser.add_argument('--tc',    type=float, default=1.0,
+                        help='Engine 1 time per move in seconds (default: 1.0)')
+    parser.add_argument('--tc2',   type=float, default=None,
+                        help='Engine 2 time per move in seconds (default: same as --tc)')
+    parser.add_argument('--depth',  type=int, default=None,
+                        help='Engine 1 max search depth (overrides --tc when set)')
+    parser.add_argument('--depth2', type=int, default=None,
+                        help='Engine 2 max search depth (default: same as --depth)')
+    parser.add_argument('--tdleaf-timeout', type=float, default=15.0,
+                        help='Seconds to wait for TDLeaf confirmation per game (default: 15)')
+    parser.add_argument('--move-timeout', type=float, default=60.0,
+                        help='Seconds to wait for a single move before aborting (default: 60)')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Print all raw engine I/O')
     args = parser.parse_args()
 
-    # Resolve binary path
-    binary = (
-        args.binary if os.path.isabs(args.binary)
-        else os.path.join(run_dir, args.binary)
-    )
-    if not os.path.isfile(binary):
-        print(f"Error: binary not found: {binary}", file=sys.stderr)
+    def resolve(name):
+        if os.path.isabs(name):
+            return name
+        return os.path.join(run_dir, name)
+
+    binary1 = resolve(args.binary)
+    if not os.path.isfile(binary1):
+        print(f'Error: binary not found: {binary1}', file=sys.stderr)
         sys.exit(1)
 
-    # Run in the binary's directory so .nnue / .tdleaf.bin are found
-    work_dir     = os.path.dirname(binary)
-    weights_file = os.path.join(work_dir, "nn-ad9b42354671.tdleaf.bin")
+    two_engine = args.engine2 is not None
+    if two_engine:
+        binary2 = resolve(args.engine2)
+        if not os.path.isfile(binary2):
+            print(f'Error: engine2 not found: {binary2}', file=sys.stderr)
+            sys.exit(1)
 
-    tc_str = f"{args.tc}s/move"
-    if args.depth:
-        tc_str += f"  depth≤{args.depth}"
+    # Defaults for engine 2
+    tc2    = args.tc2    if args.tc2    is not None else args.tc
+    depth2 = args.depth2 if args.depth2 is not None else args.depth
 
-    print(f"Binary:       {binary}")
-    print(f"Games:        {args.games}")
-    print(f"Time ctrl:    {tc_str}")
-    print(f"Move timeout: {args.move_timeout:.0f}s   TDLeaf timeout: {args.tdleaf_timeout:.0f}s")
-    print(f"Work dir:     {work_dir}")
+    work_dir     = os.path.dirname(binary1)
+    weights_file = os.path.join(work_dir, 'nn-ad9b42354671.tdleaf.bin')
+
+    # ----------------------------------------------------------------
+    # Print configuration
+    # ----------------------------------------------------------------
+    tc1_str = f'{args.tc}s/move' + (f'  depth≤{args.depth}' if args.depth else '')
+    print(f'Mode:         {"two-engine" if two_engine else "single-engine self-play"}')
+    print(f'Engine 1:     {os.path.basename(binary1)}')
+    print(f'  TC/depth:   {tc1_str}')
+    if two_engine:
+        tc2_str = f'{tc2}s/move' + (f'  depth≤{depth2}' if depth2 else '')
+        print(f'Engine 2:     {os.path.basename(binary2)}')
+        print(f'  TC/depth:   {tc2_str}')
+    print(f'Games:        {args.games}')
+    print(f'Move timeout: {args.move_timeout:.0f}s   TDLeaf timeout: {args.tdleaf_timeout:.0f}s')
+    print(f'Work dir:     {work_dir}')
     if args.verbose:
-        print("Verbose:      on")
+        print('Verbose:      on')
     print()
 
     # ----------------------------------------------------------------
-    # Launch engine
+    # Launch engine(s)
     # ----------------------------------------------------------------
-    # Pass "xb" so xboard=1 is set before the main loop's first iteration.
-    # Without this, EXchess prints "White-To-Move[1]: " (no newline) at startup
-    # before reading the "xboard" command from stdin, and Python's readline()
-    # fuses it with the first move line into "White-To-Move[1]: move Nf3".
-    proc = subprocess.Popen(
-        [binary, "xb"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=work_dir,
-        text=True,
-        bufsize=1,
-    )
+    e1 = launch_engine(binary1, work_dir)
+    e2 = launch_engine(binary2, work_dir) if two_engine else None
 
     q = Queue()
-    threading.Thread(
-        target=reader_thread, args=(proc.stdout, q, 'out'), daemon=True
-    ).start()
-    threading.Thread(
-        target=reader_thread, args=(proc.stderr, q, 'err'), daemon=True
-    ).start()
+    threading.Thread(target=reader_thread, args=(e1.stdout, q, 'e1out'), daemon=True).start()
+    threading.Thread(target=reader_thread, args=(e1.stderr, q, 'e1err'), daemon=True).start()
+    if two_engine:
+        threading.Thread(target=reader_thread, args=(e2.stdout, q, 'e2out'), daemon=True).start()
+        threading.Thread(target=reader_thread, args=(e2.stderr, q, 'e2err'), daemon=True).start()
 
-    # Drain startup banner (~0.5 s); print it in verbose mode
-    if args.verbose:
-        print("  [startup output]")
-    deadline = time.monotonic() + 0.5
+    # Drain startup banners
+    deadline = time.monotonic() + 0.7
     while time.monotonic() < deadline:
         try:
             label, line = q.get(timeout=0.05)
             if args.verbose and line is not None:
-                tag = "OUT" if label == 'out' else "ERR"
-                print(f"  [{tag}] {line}", flush=True)
+                tag = {'e1out': 'E1OUT', 'e1err': 'E1ERR',
+                       'e2out': 'E2OUT', 'e2err': 'E2ERR'}.get(label, label.upper())
+                print(f'  [STARTUP {tag}] {line}', flush=True)
         except Empty:
             pass
 
-    # Enter xboard mode; suppress thinking lines for speed
-    send(proc, "xboard", args.verbose)
-    send(proc, "nopost", args.verbose)
-    # Drain any feature lines the engine sends back in xboard mode
+    send(e1, 'xboard', args.verbose, 'E1>>>')
+    send(e1, 'nopost',  args.verbose, 'E1>>>')
+    if two_engine:
+        send(e2, 'xboard', args.verbose, 'E2>>>')
+        send(e2, 'nopost',  args.verbose, 'E2>>>')
     drain(q, timeout=0.2)
 
     # ----------------------------------------------------------------
-    # Self-play loop
+    # Game loop
     # ----------------------------------------------------------------
-    wins = draws = losses = 0
+    wins = draws = losses = 0   # always from engine 1's perspective
     td_plies_list = []
     start_wall    = time.monotonic()
+    tc1_int = max(1, round(args.tc))
+    tc2_int = max(1, round(tc2))
 
     for game_num in range(1, args.games + 1):
 
         elapsed_so_far = time.monotonic() - start_wall
         print(
-            f"--- Game {game_num}/{args.games}"
-            f"  (W={wins} D={draws} L={losses}"
-            f"  elapsed={elapsed_so_far:.0f}s) ---",
+            f'--- Game {game_num}/{args.games}'
+            f'  (W={wins} D={draws} L={losses}'
+            f'  elapsed={elapsed_so_far:.0f}s) ---',
             flush=True,
         )
 
-        start_game(proc, args.tc, args.depth, args.verbose)
+        # In two-engine mode: alternate engine 1's color each game so TDLeaf
+        # sees both White-to-move and Black-to-move positions.
+        # Odd games → engine 1 plays White; even games → engine 1 plays Black.
+        eng1_white = (not two_engine) or (game_num % 2 == 1)
+
+        # Setup engine 1
+        send(e1, 'new',          args.verbose, 'E1>>>')
+        send(e1, f'st {tc1_int}', args.verbose, 'E1>>>')
+        if args.depth:
+            send(e1, f'sd {args.depth}', args.verbose, 'E1>>>')
+
+        # Setup engine 2 (if present)
+        if two_engine:
+            send(e2, 'new',          args.verbose, 'E2>>>')
+            send(e2, f'st {tc2_int}', args.verbose, 'E2>>>')
+            if depth2:
+                send(e2, f'sd {depth2}', args.verbose, 'E2>>>')
+
+        # Kick off: white engine gets 'go'; in single-engine mode that's always e1.
+        if two_engine:
+            if eng1_white:
+                send(e1, 'go', args.verbose, 'E1>>>')
+                active,  active_tag  = e1, 'E1>>>'
+                passive, passive_tag = e2, 'E2>>>'
+                active_lbl = 'e1out'
+            else:
+                send(e2, 'go', args.verbose, 'E2>>>')
+                active,  active_tag  = e2, 'E2>>>'
+                passive, passive_tag = e1, 'E1>>>'
+                active_lbl = 'e2out'
+        else:
+            send(e1, 'go', args.verbose, 'E1>>>')
 
         # ---- play one game ----
         game_result   = None
         move_count    = 0
         game_start    = time.monotonic()
         last_progress = game_start
-        # stderr lines seen during gameplay; TDLeaf (unbuffered stderr) can
-        # arrive before the stdout result line is flushed from the pipe buffer,
-        # so we save them here and check them first in wait_for_tdleaf().
-        stderr_during_game = []
+        e1_stderr_buf = []   # TDLeaf lines may arrive before stdout result
 
         while game_result is None:
             try:
                 label, line = q.get(timeout=args.move_timeout)
             except Empty:
                 print(
-                    f"  TIMEOUT ({args.move_timeout:.0f}s) waiting for engine move"
-                    f" after {move_count} moves — aborting game.",
+                    f'  TIMEOUT ({args.move_timeout:.0f}s) waiting for move'
+                    f' after {move_count} moves — aborting game.',
                     flush=True,
                 )
-                game_result = "timeout"
+                game_result = 'timeout'
                 break
 
             if line is None:
-                print(
-                    f"  Engine stream closed unexpectedly after {move_count} moves.",
-                    flush=True,
-                )
-                game_result = "error"
+                print(f'  Engine stream closed after {move_count} moves.', flush=True)
+                game_result = 'error'
                 break
 
             if args.verbose:
-                tag = "OUT" if label == 'out' else "ERR"
-                print(f"  [{tag}] {line}", flush=True)
+                tag = {'e1out': 'E1OUT', 'e1err': 'E1ERR',
+                       'e2out': 'E2OUT', 'e2err': 'E2ERR'}.get(label, label.upper())
+                print(f'  [{tag}] {line}', flush=True)
 
-            if label == 'err':
-                stderr_during_game.append(line)
+            # Buffer engine 1 stderr for TDLeaf detection
+            if label == 'e1err':
+                e1_stderr_buf.append(line)
+                continue
+            if label == 'e2err':
                 continue
 
-            if label == 'out':
-                if MOVE_RE.search(line):
-                    move_count += 1
+            # ---- stdout from engines ----
+            # A move from the active engine triggers usermove+go to the passive one.
+            # A result string from either engine ends the game.
+            m_move = MOVE_RE.search(line)
 
-                    # Periodic progress update every 10 moves
-                    now = time.monotonic()
-                    if move_count % 10 == 0 or (now - last_progress) >= 5.0:
-                        elapsed_game = now - game_start
-                        print(
-                            f"  move {move_count:3d}  elapsed={elapsed_game:.1f}s",
-                            flush=True,
-                        )
-                        last_progress = now
+            if m_move and (not two_engine or label == active_lbl):
+                move = m_move.group(1)
+                move_count += 1
 
-                    # Engine finished a move and is waiting for input.
-                    # Send "go" to continue self-play.  If this was the
-                    # last move of the game, the extra "go" is harmless
-                    # (engine processes it with game.over=1 still set).
-                    send(proc, "go", args.verbose)
-                    continue
+                now = time.monotonic()
+                if move_count % 10 == 0 or (now - last_progress) >= 5.0:
+                    print(f'  move {move_count:3d}  elapsed={now - game_start:.1f}s',
+                          flush=True)
+                    last_progress = now
 
-                m = RESULT_RE.search(line)
-                if m:
-                    game_result = m.group(1)
-                    # Don't break immediately — engine still needs to
-                    # process our last "go" and run TDLeaf.
+                if two_engine:
+                    # Inform the passive engine of the move.  EXchess auto-searches
+                    # after usermove because p_side!=wtm — sending 'go' here would
+                    # trigger a spurious second search with the wrong color.
+                    send(passive, f'usermove {move}', args.verbose, passive_tag)
+                    # Swap roles.
+                    active,  passive  = passive,  active
+                    active_tag, passive_tag = passive_tag, active_tag
+                    active_lbl = 'e1out' if active is e1 else 'e2out'
+                else:
+                    # Single-engine: just send go for the other side.
+                    send(e1, 'go', args.verbose, 'E1>>>')
+                continue
 
-            # Ignore unrecognised lines unless verbose (already printed above).
+            # Result string from any engine stdout ends the game.
+            if label in ('e1out', 'e2out'):
+                m_res = RESULT_RE.search(line)
+                if m_res:
+                    game_result = m_res.group(1)
+                    # Don't break yet: in two-engine mode we still need to send
+                    # the result to engine 1 to trigger TDLeaf; in single-engine
+                    # mode the engine still needs to process the trailing 'go'.
 
-        if game_result in ("timeout", "error"):
+        # ---- post-game ----
+        if game_result in ('timeout', 'error'):
             drain(q, timeout=1.0)
             continue
 
-        # ---- wait for TDLeaf update ----
-        plies, skipped = wait_for_tdleaf(
-            q, args.tdleaf_timeout, args.verbose, stderr_during_game
-        )
+        # In two-engine mode, send the result to engine 1 so TDLeaf is
+        # triggered even when engine 2 made the last move.
+        if two_engine:
+            send(e1, f'result {game_result}', args.verbose, 'E1>>>')
 
-        # Drain any residual output before next game
+        plies, skipped = wait_for_tdleaf(
+            q, args.tdleaf_timeout, args.verbose, e1_stderr_buf
+        )
         drain(q, timeout=0.1)
 
-        # ---- tally ----
-        if game_result == "1-0":
-            wins   += 1
-        elif game_result == "0-1":
-            losses += 1
+        # Tally from engine 1's perspective.
+        if game_result == '1-0':
+            if eng1_white: wins   += 1
+            else:          losses += 1
+        elif game_result == '0-1':
+            if eng1_white: losses += 1
+            else:          wins   += 1
         else:
-            draws  += 1
+            draws += 1
 
         total = wins + draws + losses
 
@@ -369,43 +402,48 @@ def main():
             td_plies_list.append(plies)
 
         if plies is None:
-            td_status = "TDLeaf: no confirmation (check --tdleaf-timeout or binary flags)"
+            td_status = 'TDLeaf: no confirmation (check --tdleaf-timeout or binary flags)'
         elif skipped:
-            td_status = f"TDLeaf: skipped (only {plies} plies)"
+            td_status = f'TDLeaf: skipped ({plies} plies)'
         else:
-            td_status = f"TDLeaf: updated {plies} plies"
+            td_status = f'TDLeaf: updated {plies} plies'
 
+        color1       = 'W' if eng1_white else 'B'
         game_elapsed = time.monotonic() - game_start
         score_pct    = 100.0 * (wins + 0.5 * draws) / max(1, total)
         print(
-            f"  Result: {game_result}  moves={move_count}  time={game_elapsed:.1f}s  "
-            f"W={wins} D={draws} L={losses}  score={score_pct:.1f}%  {td_status}",
+            f'  Result: {game_result}  eng1={color1}  moves={move_count}'
+            f'  time={game_elapsed:.1f}s'
+            f'  W={wins} D={draws} L={losses}  score={score_pct:.1f}%  {td_status}',
             flush=True,
         )
 
     # ----------------------------------------------------------------
-    # Shut down engine
+    # Shut down
     # ----------------------------------------------------------------
-    try:
-        send(proc, "quit", args.verbose)
-        proc.wait(timeout=5)
-    except Exception:
-        proc.kill()
+    for proc, tag in [(e1, 'E1>>>'), (e2, 'E2>>>') if e2 else (None, None)]:
+        if proc is None:
+            continue
+        try:
+            send(proc, 'quit', args.verbose, tag)
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
 
     elapsed = time.monotonic() - start_wall
     total   = wins + draws + losses
     avg_len = sum(td_plies_list) / len(td_plies_list) if td_plies_list else 0.0
 
     print()
-    print("=" * 60)
-    print(f"Finished {args.games} games in {elapsed:.1f}s  "
-          f"({elapsed / max(1, args.games):.1f}s/game)")
-    print(f"Result:   W={wins}  D={draws}  L={losses}  "
-          f"score={100.0*(wins+0.5*draws)/max(1,total):.1f}%")
+    print('=' * 60)
+    print(f'Finished {args.games} games in {elapsed:.1f}s'
+          f'  ({elapsed / max(1, args.games):.1f}s/game)')
+    print(f'Engine 1:  W={wins}  D={draws}  L={losses}'
+          f'  score={100.0 * (wins + 0.5 * draws) / max(1, total):.1f}%')
     if td_plies_list:
-        print(f"Avg ply count (TDLeaf): {avg_len:.1f}")
-    print(f"Weights file: {weights_file}")
+        print(f'Avg ply count (TDLeaf): {avg_len:.1f}')
+    print(f'Weights file: {weights_file}')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
