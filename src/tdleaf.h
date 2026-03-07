@@ -24,7 +24,7 @@
 // Hyperparameters (can be overridden by setvalue/environment at runtime)
 // ---------------------------------------------------------------------------
 static const float TDLEAF_LAMBDA          = 0.7f;   // eligibility trace decay
-static const float TDLEAF_ALPHA           = 2.0f; // learning rate (raw-int-scale weights)
+static const float TDLEAF_ALPHA           = 20.0f; // learning rate (raw-int-scale weights)
 static const float TDLEAF_K               = 400.0f; // sigmoid temperature (centipawns)
 static const int   TDLEAF_MIN_PLIES       = 8;      // skip games shorter than this
 // Per-update clamp: a single game's gradient update is limited to at most this
@@ -57,13 +57,20 @@ struct TDGameRecord {
 // ---------------------------------------------------------------------------
 
 // Record one ply after each ts.search() call.
-// root_acc: root search node accumulator (game.ts.tdata[0].n[0].acc).
-// score_stm: raw search score from STM POV (game.ts.g_last).
-// wtm: game.pos.wtm (before making the move).
-// piece_count: total pieces on board for stack selection.
+// Walks the principal variation to the leaf position; records the leaf
+// accumulator, leaf wtm, and leaf-perspective score (not the root's).
+//
+// root_pos:        game.pos
+// root_acc:        game.ts.tdata[0].n[0].acc
+// pv:              game.ts.tdata[0].pc[0]   (NOMOVE-terminated)
+// score_root_stm:  game.ts.g_last           (score, root STM perspective)
+// root_wtm:        game.pos.wtm
 void tdleaf_record_ply(TDGameRecord &rec,
+                       const struct position &root_pos,
                        const NNUEAccumulator &root_acc,
-                       int score_stm, bool wtm, int piece_count);
+                       const move *pv,
+                       int score_root_stm,
+                       bool root_wtm);
 
 // Run the full TDLeaf(λ) update after a game ends.
 // result: game outcome from White's perspective (1.0=White wins, 0.5=draw, 0.0=Black wins).

@@ -487,13 +487,12 @@ void make_move()
      assert(!game.searching);
 #if TDLEAF && NNUE && !TDLEAF_READONLY
      if (nnue_available) {
-       int pc = 2;
-       for (int _s = 0; _s < 2; _s++)
-         for (int _pt = PAWN; _pt <= QUEEN; _pt++)
-           pc += game.pos.plist[_s][_pt][0];
        tdleaf_record_ply(game.td_game,
+                         game.pos,
                          game.ts.tdata[0].n[0].acc,
-                         game.ts.g_last, (bool)game.pos.wtm, pc);
+                         game.ts.tdata[0].pc[0],
+                         game.ts.g_last,
+                         (bool)game.pos.wtm);
      }
 #endif
      //---------------------------

@@ -13,24 +13,54 @@
 #include "tdleaf.h"
 
 // ---------------------------------------------------------------------------
-// tdleaf_record_ply — snapshot root accumulator + score after each search
+// tdleaf_record_ply — walk the PV to the leaf, then snapshot its accumulator
 // ---------------------------------------------------------------------------
 void tdleaf_record_ply(TDGameRecord &rec,
+                       const position &root_pos,
                        const NNUEAccumulator &root_acc,
-                       int score_stm, bool wtm, int piece_count)
+                       const move *pv,
+                       int score_root_stm,
+                       bool root_wtm)
 {
     if (rec.n_plies >= MAX_GAME_PLY) return;  // safety guard
 
+    // Walk the PV, updating the position and accumulator incrementally.
+    // We use two alternating accumulator slots to avoid unnecessary copies.
+    NNUEAccumulator acc_a = root_acc;   // current leaf accumulator
+    NNUEAccumulator acc_b;              // scratch for next step
+    position cur = root_pos;
+    int pv_len = 0;
+
+    for (int k = 0; k < MAXD && pv[k].t != NOMOVE; k++) {
+        position next = cur;
+        if (!next.exec_move(pv[k], 0)) break;  // illegal — stop here
+        nnue_record_delta(acc_b, cur, next, pv[k]);
+        nnue_apply_delta(acc_b, acc_a, next);
+        cur   = next;
+        acc_a = acc_b;
+        pv_len++;
+    }
+    // acc_a now holds the fully computed leaf accumulator; cur is the leaf position.
+
+    // Leaf score from leaf STM perspective: negate once per ply walked.
+    int leaf_score_stm = (pv_len & 1) ? -score_root_stm : score_root_stm;
+    bool leaf_wtm      = root_wtm ^ (bool)(pv_len & 1);
+
+    // Leaf piece count for stack selection.
+    int pc = 2;  // kings
+    for (int sd = 0; sd < 2; sd++)
+        for (int pt = PAWN; pt <= QUEEN; pt++)
+            pc += cur.plist[sd][pt][0];
+    pc = (pc < 1) ? 1 : (pc > 32) ? 32 : pc;
+
     TDRecord &r = rec.plies[rec.n_plies++];
-    memcpy(r.acc[0], root_acc.acc[0], NNUE_HALF_DIMS * sizeof(int16_t));
-    memcpy(r.acc[1], root_acc.acc[1], NNUE_HALF_DIMS * sizeof(int16_t));
-    memcpy(r.psqt[0], root_acc.psqt[0], NNUE_PSQT_BKTS * sizeof(int32_t));
-    memcpy(r.psqt[1], root_acc.psqt[1], NNUE_PSQT_BKTS * sizeof(int32_t));
-    r.score_stm = score_stm;
-    r.wtm       = wtm;
-    if (piece_count < 1)  piece_count = 1;
-    if (piece_count > 32) piece_count = 32;
-    r.stack     = (piece_count - 1) / 4;
+    memcpy(r.acc[0],  acc_a.acc[0],  NNUE_HALF_DIMS  * sizeof(int16_t));
+    memcpy(r.acc[1],  acc_a.acc[1],  NNUE_HALF_DIMS  * sizeof(int16_t));
+    memcpy(r.psqt[0], acc_a.psqt[0], NNUE_PSQT_BKTS * sizeof(int32_t));
+    memcpy(r.psqt[1], acc_a.psqt[1], NNUE_PSQT_BKTS * sizeof(int32_t));
+    r.score_stm = leaf_score_stm;
+    r.wtm       = leaf_wtm;
+    r.stack     = (pc - 1) / 4;
 }
 
 // ---------------------------------------------------------------------------
