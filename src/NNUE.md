@@ -15,13 +15,12 @@ g++ -o EXchess src/EXchess.cc -O3 -D VERS="dev" -D TABLEBASES=1 -D NNUE=1 -pthre
 or via the build script:
 
 ```sh
-perl comp.pl 2026_03_02b NNUE=1
+perl comp.pl 2026_03_07a NNUE=1
 ```
 
-The network file `nn-ae6a388e4a1a.nnue` must be in the same directory as the binary, or
-in the directory from which the engine is launched.  This file is the default Stockfish
-15.1 network and can be downloaded from:
-https://github.com/official-stockfish/networks
+The network file `nn-ad9b42354671.nnue` (Stockfish 15.1 exact release, 47 MB) must be in
+the same directory as the binary, or in the directory from which the engine is launched.
+It can be downloaded from: https://github.com/official-stockfish/networks
 
 When NNUE is not compiled in (`-D NNUE=0` or omitted), the classical eval is used
 unchanged.  When NNUE is compiled in but the network file is not found, the engine falls
@@ -35,28 +34,49 @@ back to classical eval automatically.
 |-----------|--------|
 | Feature set | HalfKAv2_hm: 32 king-buckets × 704 piece-square indices = **22,528 features** |
 | Feature transformer (FT) | 22,528 → 1,024 int16 per perspective + 8 int32 PSQT per perspective |
-| Layer stacks | 8 stacks selected by material bucket (piece_count / 4), each: |
-| FC0 | 3,072 → 16 (dual-activation input: 2 × 1,536 = 3,072) |
+| Layer stacks | 8 stacks selected by `(piece_count − 1) / 4`, each: |
+| FC0 | 1,024 → 16 (SqrCReLU-only input: 512 per perspective × 2 = 1,024) |
 | FC1 | 30 → 32 (dual-activation of FC0 outputs 0–14) |
 | FC2 | 32 → 1 (output; FC0 output-15 adds directly as passthrough) |
-| Activation | SqrCReLU on pairs + CReLU on full range |
+| Activation | SqrCReLU (outputs 0–14) + CReLU (outputs 0–14, appended) |
 
 **King orientation (HalfKAv2_hm):** each perspective horizontally mirrors the board
 when the own king is on the queen side (files a–d), so the king always appears on files
 e–h.  The EXchess convention uses `orient = ((ksq_f & 7) < 4) ? 7 : 0` where `ksq_f`
 is the king square after rank-flip for the BLACK perspective.
 
+**Own king as feature:** the own king IS included as a feature (PS_KING = 640 slot),
+identical to the enemy king entry.  Both kings contribute to the accumulator for their
+respective perspectives.
+
 ---
 
-## Score Calibration
+## Score Formula
+
+The output follows the Stockfish 15.1 formula exactly:
+
+```
+value_internal = (psqt_diff / 2 + positional) / OutputScale(16)   [Stockfish Value units]
+centipawns     = value_internal × 100 / NormalizeToPawnValue(361)
+               = (psqt_diff / 2 + positional) × 100 / 5776
+```
+
+where:
+- `psqt_diff = psqt[stm][stack] − psqt[opp][stack]`
+- `positional = fc2_out + fwdOut`
+- `fwdOut = fc0_raw[15] × 9600 / 8128`  (passthrough; `600×OutputScale / (127×WeightScaleBits)`)
+- `5776 = 16 × 361`
+
+Relevant quantization constants in `nnue.h`:
 
 | Constant | Value | Meaning |
 |----------|-------|---------|
-| `NNUE_CP_SCALE` | 128 | `network_out / 128` → EXchess centipawns |
-| `NNUE_PSQT_SCALE` | 128 | `psqt_out / 128` → EXchess centipawns; Stockfish divides (stm−opp)/2 before scaling, EXchess accumulates full diff so scale×2 compensates |
-| `NNUE_FT_SHIFT` | 6 | int16 accumulator → int8 input for dual-activation |
-| `NNUE_SQR_SHIFT` | 7 | SqrCReLU product right-shift (max product = 127²=16,129 → ≤ 126) |
-| `NNUE_WEIGHT_SHIFT` | 6 | FC layer outputs → [0, 127] int8 range |
+| `NNUE_WEIGHT_SHIFT` | 6 | FC weight quantization: raw int32 >> 6 → [0,127] range |
+| `NNUE_SQR_SHIFT` | 7 | SqrCReLU shift: `fc0_raw² >> (2×6+7=19)` → [0,127] |
+
+**SqrCReLU detail:** the raw int32 fc0 value is squared *before* clamping:
+`output = clamp(0, 127, fc0_raw² >> 19)`.  This matches Stockfish's `SqrClippedReLU`
+exactly — negative fc0 values produce non-zero squared outputs.
 
 `nnue_evaluate()` returns a score from the **side-to-move's perspective** (positive =
 good for the side to move).  The score hash stores values in **White's perspective**;
@@ -140,6 +160,31 @@ Cut nodes — roughly 58% of all nodes — now pay only a handful of integer ass
 instead of a 4KB copy plus 1K `add_feat`/`sub_feat` calls into the 46 MB `ft_weights`
 table.
 
+### 6. King-capture lazy accumulator fix (correctness, v2026_03_06z)
+
+When a king *captures* a piece (`Kxf7` etc.), `nnue_record_delta` was only recording the
+king's movement (sub from-square, add to-square) but omitting the subtraction of the
+captured piece from the opponent's incremental accumulator.  Fix: added `if (capt_pt)`
+capture subtraction in the king-move branch of both `nnue_record_delta` and
+`nnue_update_accumulator`.  Verified via `NNUE_CHECK_LAZY` across multiple positions
+including king-capture sequences.
+
+### 7. Own-king feature inclusion (correctness, v2026_03_07a)
+
+`halfkav2_feature()` was returning −1 (skip) for the own king, but Stockfish includes the
+own king as a feature in the PS_KING = 640 slot, the same as the enemy king.  Removing
+the exclusion gives correct feature indices and accumulator values for all positions.
+This was a major source of evaluation error.
+
+### 8. SqrCReLU: square raw value before clamping (correctness, v2026_03_07a)
+
+The dual-activation loop was computing `v = clamp(0,127, fc0>>6); sq = v²>>7` — clamping
+to `[0,127]` *before* squaring, which zeroed all negative fc0 values.  Stockfish's
+`SqrClippedReLU` squares the raw int32 value first:
+`output = clamp(0, 127, fc0_raw² >> 19)`.  Many fc0 outputs are strongly negative (e.g.
+−13,000 to −8,000 in typical middlegame positions); these now contribute 127 to FC1 input
+instead of 0, dramatically improving the positional component of the evaluation.
+
 ---
 
 ## NPS Benchmarks
@@ -153,102 +198,45 @@ table.
 | v2026_03_01c | 645,539 | + score hash (+22%) |
 | v2026_03_01e | 691,200 | + score hash + vdotq FC0 (+31% total) |
 | v2026_03_02b | ~720,000 | + NEON dual-act + vdotq FC1 + root dirty fix (+36% total) |
-| v2026_03_02c | ~840,000 | + lazy accumulator (+59% vs baseline, +17% vs 02b) |
-| v2026_03_02e | ~844,000 | + root premove_score uses NNUE accumulator (correctness fix, ~0% NPS) |
-| v2026_03_02f | ~870,000 | + singular-extension accumulator fix (correctness, ~0% NPS) |
+| v2026_03_02c | ~840,000 | + lazy accumulator (+59% vs baseline) |
+| v2026_03_02f | ~870,000 | + singular-extension accumulator fix (correctness) |
+| v2026_03_07a | ~870,000 | + own-king fix + SqrCReLU fix + unified scale (correctness) |
 
-Remaining gap vs. classical: **~1.96×**.  At a 1-minute time control the NNUE version
+Remaining gap vs. classical: **~1.9×**.  At a 1-minute time control the NNUE version
 typically searches approximately 1–2 plies shallower than the classical version.
 
 ---
 
-## Known Issues and Remaining Work
+## Match Results
 
-### High priority
+Self-play matches at 1 min + 0.1 s/move, 100 games each:
 
-#### 1. Lazy accumulator — DONE (v2026_03_02c)
+| Match-up | Score | Notes |
+|----------|-------|-------|
+| v2026_03_02g vs classical | 10.0% (0W 2D 18L) | old code, broken scales |
+| v2026_03_06z vs classical | 22.5% (4W 1D 15L) | fixed lazy acc, split scale |
+| v2026_03_07a vs v2026_03_06z | **98.0% (96W 4D 0L)** | own-king + SqrCReLU + unified scale |
+| **v2026_03_07a vs classical** | **96.0% (92W 8D 0L)** | current best |
 
-`nnue_apply_delta` now implements true one-level-lazy incremental evaluation:
-- `nnue_record_delta` (called at every `exec_move`) records only the feature-index changes
-  (a few integers) without touching `ft_weights`.
-- `nnue_apply_delta` (called only when `score_pos` is needed) copies the parent's
-  already-computed accumulator and applies the stored add/sub deltas (one `memcpy` +
-  ≤4 `add_feat`/`sub_feat` calls per perspective).  For king moves, the king's own
-  perspective is rebuilt from scratch (`need_refresh=true`); the opponent's perspective
-  is incremental.
-- All cut nodes (~58% of nodes) now pay only the cost of `nnue_record_delta` (a few
-  integer assignments) instead of a 4KB copy + `ft_weights` access.
-- Correctness verified: bit-for-bit identical PV moves and scores at every depth vs 02b.
+---
 
-#### 2. Evaluation correctness — ACTIVE BUG (as of 2026-03-02)
+## Remaining Work
 
-**All NNUE builds (v2026_03_01b through v2026_03_02g) play catastrophically vs classical
-(0 wins in 20 games, ~−511 Elo).**
-
-PGN analysis of game 1 (v2026_03_02f, NNUE=White) shows a distinctive pattern:
-- Move 11: NNUE≈+0.23, classical≈+0.23 — identical at the symmetric opening
-- Move 25: NNUE=−0.20, classical=+0.78 — 0.58 pawn gap, divergence beginning
-- Move 29: NNUE=+0.15, classical=+2.01 — NNUE thinks it's ahead when 2 pawns down!
-- Move 34: NNUE=+0.06, classical=+5.37 — **5.43 pawn discrepancy**
-
-The monotonically growing error (small at symmetric start, huge in asymmetric endgame)
-is the hallmark of **evaluation drift** rather than a constant calibration error.
-
-**PSQT scale fix (NNUE_PSQT_SCALE 64→128) did not help** — match result still 0-19-1.
-
-**Leading hypothesis: feature ordering mismatch or incorrect orient/flip logic in
-`halfkav2_feature`.**  The EXchess implementation uses piece-major ordering:
-
-```cpp
-ps = (ptype - 1) * 128 + (is_own ? 0 : 64);
-feature = bucket + ps + psq_o;
-```
-
-If this doesn't exactly match the storage order used when the network was trained
-(Stockfish source: `(pc_type * 2 + (pc_color != persp)) * SQUARE_NB + oriented_sq`),
-features are activating the wrong weight rows.  Starting positions are ~symmetric so
-errors partially cancel; they compound as the position becomes asymmetric.
-
-**Next steps (to investigate 2026-03-09):**
-1. Verify Stockfish's actual `make_index` formula against our implementation
-2. Cross-check `orient` flag: `(ksq_f & 7) < 4 ? 7 : 0` (file-flip) vs Stockfish
-3. Add accumulator validation: lazy-delta vs full-refresh at mid-game positions
-4. Verify opponent-king feature slot (ps=640): does Stockfish map it the same way?
-
-### Medium priority
-
-#### 3. Search parameter tuning
+### Search parameter tuning
 
 The search's pruning parameters (null-move margins, futility thresholds, aspiration
 windows, LMR reduction tables) were tuned for the classical eval.  The NNUE eval has a
 different score distribution and may benefit from re-tuning these constants.  CLOP or a
 self-play tournament with systematic variation would be the appropriate approach.
 
-#### 4. FC2 and PSQT minor improvements
-
-- **FC2** (32×1 output layer) is currently scalar.  With `vdotq` it would be 8
-  iterations — negligible gain but trivial to add.
-- **PSQT accumulator** (8 int32 values per perspective): the add/sub operations in
-  `add_feat`/`sub_feat` are scalar loops of length 8, likely already unrolled by the
-  compiler; no action needed.
-
-### Low priority / informational
-
-#### 5. Network file version
-
-The current network `nn-ae6a388e4a1a.nnue` is the Stockfish 15.1 default.  More recent
-Stockfish networks (Stockfish 16 and later) use the same HalfKAv2_hm architecture and
-file format, so any official Stockfish network with the same architecture (verify by
-checking the architecture string in the header) should load correctly.
-
-#### 6. Pawn hash unused under NNUE
+### Pawn hash unused under NNUE
 
 The classical eval stores pawn structure scores in a pawn hash table for reuse.  The NNUE
 eval bypasses the classical eval entirely, so `pawn hash hits` is always 0 in NNUE mode.
 The pawn hash memory (≈19 MB) is wasted when using NNUE.  Disabling or shrinking it at
 build time when `NNUE=1` would recover that memory, but has no effect on playing strength.
 
-#### 7. Multi-thread accumulator correctness
+### Multi-thread accumulator correctness
 
 The SMP search allocates one `ts_thread_data` per thread, each with its own
 `search_node n[MAXD+1]` stack including per-node accumulators.  Each thread's root
