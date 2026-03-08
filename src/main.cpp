@@ -115,7 +115,7 @@ int main(int argc, char *argv[])
   //-------------------------------
   strcpy(exec_path, argv[0]);
   int last_slash = -1;
-  for(int j = 0; j < 100; j++) {
+  for(int j = 0; j < FILENAME_MAX; j++) {
     if(exec_path[j] == '\0') break;
     if(exec_path[j] == '\\') last_slash = j;
     if(exec_path[j] == '/') last_slash = j;
@@ -670,8 +670,9 @@ void make_move()
      float td_result = 0.5f;
      if (strstr(game.overstring, "1-0"))  td_result = 1.0f;
      else if (strstr(game.overstring, "0-1")) td_result = 0.0f;
-     tdleaf_update_after_game(game.td_game, td_result,
-                              NNUE_TDLEAF_BIN);
+     char tdleaf_save[FILENAME_MAX];
+     snprintf(tdleaf_save, sizeof(tdleaf_save), "%s%s", exec_path, NNUE_TDLEAF_BIN);
+     tdleaf_update_after_game(game.td_game, td_result, tdleaf_save);
      game.td_game.n_plies = 0;  // prevent double-trigger
    }
 #endif
@@ -1084,8 +1085,9 @@ void parse_command()
       float td_result = 0.5f;
       if (!strcmp(result_str, "1-0"))      td_result = 1.0f;
       else if (!strcmp(result_str, "0-1")) td_result = 0.0f;
-      tdleaf_update_after_game(game.td_game, td_result,
-                               NNUE_TDLEAF_BIN);
+      char tdleaf_save[FILENAME_MAX];
+      snprintf(tdleaf_save, sizeof(tdleaf_save), "%s%s", exec_path, NNUE_TDLEAF_BIN);
+      tdleaf_update_after_game(game.td_game, td_result, tdleaf_save);
       game.td_game.n_plies = 0;
     }
 #endif
