@@ -350,8 +350,84 @@ void nnue_backup_file(const char *path)
 }
 
 // ---------------------------------------------------------------------------
-// nnue_write_nnue — write current FC weights into a complete .nnue file.
-// FT data is copied verbatim from the originally loaded .nnue source.
+// SLEB128 writers — mirror the readers above; used by nnue_write_nnue().
+// Format: "COMPRESSED_LEB128"(17) + nbytes(4) + LEB128 data.
+// ---------------------------------------------------------------------------
+static bool write_leb128_i16(FILE *f, const int16_t *buf, size_t count)
+{
+    fwrite("COMPRESSED_LEB128", 1, 17, f);
+    long cnt_pos   = ftell(f);
+    uint32_t zero  = 0;
+    fwrite(&zero, 4, 1, f);            // placeholder for byte count
+    long data_start = ftell(f);
+
+    // Buffered writes to avoid per-value fwrite overhead.
+    const size_t WBUF = 1 << 21;      // 2 MB
+    unsigned char *wb = new unsigned char[WBUF];
+    size_t wp = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        int32_t val = (int32_t)buf[i];
+        for (;;) {
+            unsigned char byte = (unsigned char)(val & 0x7F);
+            val >>= 7;                 // arithmetic shift
+            bool more = !((val == 0 && !(byte & 0x40)) || (val == -1 && (byte & 0x40)));
+            if (more) byte |= 0x80;
+            wb[wp++] = byte;
+            if (wp == WBUF) { fwrite(wb, 1, wp, f); wp = 0; }
+            if (!more) break;
+        }
+    }
+    if (wp) fwrite(wb, 1, wp, f);
+    delete[] wb;
+
+    long data_end  = ftell(f);
+    uint32_t nbytes = (uint32_t)(data_end - data_start);
+    fseek(f, cnt_pos, SEEK_SET);
+    fwrite(&nbytes, 4, 1, f);
+    fseek(f, 0, SEEK_END);
+    return true;
+}
+
+static bool write_leb128_i32(FILE *f, const int32_t *buf, size_t count)
+{
+    fwrite("COMPRESSED_LEB128", 1, 17, f);
+    long cnt_pos   = ftell(f);
+    uint32_t zero  = 0;
+    fwrite(&zero, 4, 1, f);
+    long data_start = ftell(f);
+
+    const size_t WBUF = 1 << 21;
+    unsigned char *wb = new unsigned char[WBUF];
+    size_t wp = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        int64_t val = (int64_t)buf[i];
+        for (;;) {
+            unsigned char byte = (unsigned char)(val & 0x7F);
+            val >>= 7;
+            bool more = !((val == 0 && !(byte & 0x40)) || (val == -1 && (byte & 0x40)));
+            if (more) byte |= 0x80;
+            wb[wp++] = byte;
+            if (wp == WBUF) { fwrite(wb, 1, wp, f); wp = 0; }
+            if (!more) break;
+        }
+    }
+    if (wp) fwrite(wb, 1, wp, f);
+    delete[] wb;
+
+    long data_end  = ftell(f);
+    uint32_t nbytes = (uint32_t)(data_end - data_start);
+    fseek(f, cnt_pos, SEEK_SET);
+    fwrite(&nbytes, 4, 1, f);
+    fseek(f, 0, SEEK_END);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// nnue_write_nnue — write current NNUE weights into a complete .nnue file.
+// FT biases, FT weights, and PSQT are written from the current in-memory
+// arrays (reflecting any zeroing or TDLeaf training), encoded as SLEB128.
 // The architecture description is updated:
 //   - Normal (trained): original description + " Trained by EXchess TDLeaf"
 //   - Zero-initialized: "Trained by EXchess TDLeaf" (replaces original)
@@ -369,18 +445,6 @@ bool nnue_write_nnue(const char *dst_path)
         return false;
     }
 
-    // The 8 FC stacks occupy the last NNUE_LAYER_STACKS * STACK_BYTES bytes of the file.
-    const long STACK_BYTES = 4                             // hash
-                           + (long)NNUE_L0_SIZE * 4        // FC0 biases
-                           + (long)NNUE_L0_SIZE * NNUE_L0_INPUT  // FC0 weights
-                           + (long)NNUE_L1_SIZE * 4        // FC1 biases
-                           + (long)NNUE_L1_SIZE * NNUE_L1_PADDED // FC1 weights
-                           + 4                             // FC2 bias
-                           + (long)NNUE_L2_PADDED;         // FC2 weights
-
-    fseek(src, 0, SEEK_END);
-    long file_size = ftell(src);
-    long ft_end    = file_size - (long)NNUE_LAYER_STACKS * STACK_BYTES;
     rewind(src);
 
     // Read original header: version(4) + hash(4) + desc_size(4) + desc(N) + ft_hash(4)
@@ -393,8 +457,7 @@ bool nnue_write_nnue(const char *dst_path)
         fread(orig_desc, 1, orig_desc_size, src);
     uint32_t ft_hash;
     fread(&ft_hash, sizeof(uint32_t), 1, src);
-    // src is now positioned at the start of the FT LEB128 data.
-    long ft_data_start = (long)(4 + 4 + 4 + orig_desc_size + 4);
+    fclose(src);  // source no longer needed; FT written from memory
 
     // Build new description.
     char new_desc[4096];
@@ -409,28 +472,24 @@ bool nnue_write_nnue(const char *dst_path)
     FILE *dst = fopen(dst_path, "wb");
     if (!dst) {
         fprintf(stderr, "nnue_write_nnue: cannot create '%s'\n", dst_path);
-        fclose(src);
         return false;
     }
 
-    // Write new header.
+    // Write header.
     fwrite(&version,       sizeof(uint32_t), 1, dst);
     fwrite(&file_hash,     sizeof(uint32_t), 1, dst);
     fwrite(&new_desc_size, sizeof(uint32_t), 1, dst);
     fwrite(new_desc,       1, new_desc_size, dst);
     fwrite(&ft_hash,       sizeof(uint32_t), 1, dst);
 
-    // Copy FT LEB128 data verbatim (from after the old header to ft_end).
-    char buf[65536];
-    long remaining = ft_end - ft_data_start;
-    while (remaining > 0) {
-        size_t chunk = (remaining > (long)sizeof(buf)) ? sizeof(buf) : (size_t)remaining;
-        size_t nr = fread(buf, 1, chunk, src);
-        if (nr == 0) break;
-        fwrite(buf, 1, nr, dst);
-        remaining -= (long)nr;
-    }
-    fclose(src);
+    // Write FT section from current in-memory arrays (LEB128-encoded).
+    // This correctly reflects zeroing or TDLeaf training applied in memory.
+    printf("NNUE: writing FT biases...\n");
+    write_leb128_i16(dst, ft_biases, NNUE_HALF_DIMS);
+    printf("NNUE: writing FT weights (23M values, may take a moment)...\n");
+    write_leb128_i16(dst, ft_weights, (size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS);
+    printf("NNUE: writing PSQT weights...\n");
+    write_leb128_i32(dst, psqt_weights, (size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS);
 
     // Write each FC stack with current weights, reversing the vdotq reordering.
     const size_t fc0_w = (size_t)NNUE_L0_SIZE * NNUE_L0_INPUT;
