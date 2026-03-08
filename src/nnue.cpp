@@ -1093,6 +1093,9 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
 #if TDLEAF
 
 #include <cmath>
+#include <sys/file.h>   // flock, LOCK_EX, LOCK_SH, LOCK_UN
+#include <fcntl.h>      // open, O_RDONLY, O_RDWR, O_CREAT
+#include <unistd.h>     // close
 #include "tdleaf.h"
 #include "hash.h"   // score_table, SCORE_SIZE, score_rec — for cache invalidation
 
@@ -1123,10 +1126,21 @@ static float grad_l1_b[NNUE_LAYER_STACKS][NNUE_L1_SIZE];
 static float grad_l2_w[NNUE_LAYER_STACKS][NNUE_L2_PADDED];
 static float grad_l2_b[NNUE_LAYER_STACKS];
 
+// Per-session delta accumulators: Σ of gradient changes applied to float shadows since the
+// last file sync.  On write, merged = re_read_file_value + our_delta, which correctly
+// incorporates concurrent updates from other EXchess instances.  Cleared after each sync.
+static float delta_l0_w[NNUE_LAYER_STACKS][NNUE_L0_SIZE * NNUE_L0_INPUT];
+static float delta_l0_b[NNUE_LAYER_STACKS][NNUE_L0_SIZE];
+static float delta_l1_w[NNUE_LAYER_STACKS][NNUE_L1_SIZE * NNUE_L1_PADDED];
+static float delta_l1_b[NNUE_LAYER_STACKS][NNUE_L1_SIZE];
+static float delta_l2_w[NNUE_LAYER_STACKS][NNUE_L2_PADDED];
+static float delta_l2_b[NNUE_LAYER_STACKS];
+
 // FT/PSQT float shadow arrays (heap — OS lazy-paged, physical use ∝ active features)
 // ft_weights_f32 / grad_ft_w: [FT_INPUTS × HALF_DIMS]  ~92 MB each
 // psqt_weights_f32 / grad_psqt_w: [FT_INPUTS × PSQT_BKTS] ~720 KB each
 // ft_dirty: [FT_INPUTS] — which feature rows received gradient this game
+// ft_delta_f32 / psqt_delta_f32: accumulated FT/PSQT deltas since last file sync
 static float    *ft_weights_f32   = nullptr;
 static float    *psqt_weights_f32 = nullptr;
 static uint32_t *ft_weights_cnt   = nullptr;  // update count per FT weight
@@ -1134,6 +1148,8 @@ static uint32_t *psqt_weights_cnt = nullptr;  // update count per PSQT weight
 static float    *grad_ft_w        = nullptr;  // FT weight gradients
 static float    *grad_psqt_w      = nullptr;  // PSQT weight gradients
 static bool     *ft_dirty         = nullptr;  // which feature rows are non-zero
+static float    *ft_delta_f32     = nullptr;  // FT delta since last file sync [FT_INPUTS×HALF_DIMS]
+static float    *psqt_delta_f32   = nullptr;  // PSQT delta since last file sync [FT_INPUTS×PSQT_BKTS]
 
 // ---------------------------------------------------------------------------
 // nnue_init_zero_weights — fresh-start FC initialisation + material-only PSQT
@@ -1343,6 +1359,8 @@ void nnue_init_fp32_weights()
         grad_ft_w        = new float   [ft_sz];
         grad_psqt_w      = new float   [psqt_sz];
         ft_dirty         = new bool    [NNUE_FT_INPUTS];
+        ft_delta_f32     = new float   [ft_sz]();    // zero-initialised
+        psqt_delta_f32   = new float   [psqt_sz]();  // zero-initialised
     }
     // Initialize float shadows from the loaded int16/int32 arrays.
     for (size_t i = 0; i < ft_sz;   i++) ft_weights_f32[i]   = (float)ft_weights[i];
@@ -1352,6 +1370,15 @@ void nnue_init_fp32_weights()
     memset(grad_ft_w,        0, ft_sz   * sizeof(float));
     memset(grad_psqt_w,      0, psqt_sz * sizeof(float));
     memset(ft_dirty,         0, NNUE_FT_INPUTS * sizeof(bool));
+    // Zero delta accumulators — fresh session, no pending changes yet.
+    memset(delta_l0_w,     0, sizeof(delta_l0_w));
+    memset(delta_l0_b,     0, sizeof(delta_l0_b));
+    memset(delta_l1_w,     0, sizeof(delta_l1_w));
+    memset(delta_l1_b,     0, sizeof(delta_l1_b));
+    memset(delta_l2_w,     0, sizeof(delta_l2_w));
+    memset(delta_l2_b,     0, sizeof(delta_l2_b));
+    if (ft_delta_f32)   memset(ft_delta_f32,   0, ft_sz   * sizeof(float));
+    if (psqt_delta_f32) memset(psqt_delta_f32, 0, psqt_sz * sizeof(float));
 
     printf("NNUE TDLeaf: FP32 weights initialised (%d stacks + FT/PSQT)\n", NNUE_LAYER_STACKS);
 }
@@ -1457,7 +1484,7 @@ void nnue_accumulate_gradients(const NNUEActivations &act, float grad_scale)
     // grad w.r.t. FC2 weights and bias
     for (int i = 0; i < NNUE_L2_PADDED; i++)
         grad_l2_w[s][i] += g_fc2_raw * act.fc2_in[i];
-    grad_l2_b[s] += g_fc2_raw;
+    grad_l2_b[s] += NNUE_FC_BIAS_LR_SCALE * g_fc2_raw;
     // grad w.r.t. fc2_in[i]
     float g_fc2_in[NNUE_L2_PADDED];
     for (int i = 0; i < NNUE_L2_PADDED; i++)
@@ -1475,7 +1502,7 @@ void nnue_accumulate_gradients(const NNUEActivations &act, float grad_scale)
         if (g_fc1_raw[o] == 0.0f) continue;
         for (int i = 0; i < NNUE_L1_PADDED; i++)
             grad_l1_w[s][o * NNUE_L1_PADDED + i] += g_fc1_raw[o] * act.fc1_in[i];
-        grad_l1_b[s][o] += g_fc1_raw[o];
+        grad_l1_b[s][o] += NNUE_FC_BIAS_LR_SCALE * g_fc1_raw[o];
     }
     // grad w.r.t. fc1_in[i]
     float g_fc1_in[NNUE_L1_PADDED] = {};
@@ -1507,7 +1534,7 @@ void nnue_accumulate_gradients(const NNUEActivations &act, float grad_scale)
         if (g_fc0_raw[o] == 0.0f) continue;
         for (int i = 0; i < NNUE_L0_INPUT; i++)
             grad_l0_w[s][o * NNUE_L0_INPUT + i] += g_fc0_raw[o] * act.l0_in[i];
-        grad_l0_b[s][o] += g_fc0_raw[o];
+        grad_l0_b[s][o] += NNUE_FC_BIAS_LR_SCALE * g_fc0_raw[o];
     }
 
     // 1. Continue backward: FC0 inputs → accumulator → FT/PSQT weights
@@ -1590,36 +1617,42 @@ void nnue_apply_gradients()
     for (int s = 0; s < NNUE_LAYER_STACKS; s++) {
         for (int i = 0; i < NNUE_L0_SIZE * NNUE_L0_INPUT; i++) {
             if (grad_l0_w[s][i] != 0.0f) {
-                l0_weights_f32[s][i] -= clamp_grad(l0_weights_f32[s][i], grad_l0_w[s][i]);
+                float dw = clamp_grad(l0_weights_f32[s][i], grad_l0_w[s][i]);
+                l0_weights_f32[s][i] -= dw;  delta_l0_w[s][i] -= dw;
                 l0_weights_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L0_SIZE; i++) {
             if (grad_l0_b[s][i] != 0.0f) {
-                l0_biases_f32[s][i] -= clamp_grad(l0_biases_f32[s][i], grad_l0_b[s][i]);
+                float dw = clamp_grad(l0_biases_f32[s][i], grad_l0_b[s][i]);
+                l0_biases_f32[s][i] -= dw;  delta_l0_b[s][i] -= dw;
                 l0_biases_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L1_SIZE * NNUE_L1_PADDED; i++) {
             if (grad_l1_w[s][i] != 0.0f) {
-                l1_weights_f32[s][i] -= clamp_grad(l1_weights_f32[s][i], grad_l1_w[s][i]);
+                float dw = clamp_grad(l1_weights_f32[s][i], grad_l1_w[s][i]);
+                l1_weights_f32[s][i] -= dw;  delta_l1_w[s][i] -= dw;
                 l1_weights_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L1_SIZE; i++) {
             if (grad_l1_b[s][i] != 0.0f) {
-                l1_biases_f32[s][i] -= clamp_grad(l1_biases_f32[s][i], grad_l1_b[s][i]);
+                float dw = clamp_grad(l1_biases_f32[s][i], grad_l1_b[s][i]);
+                l1_biases_f32[s][i] -= dw;  delta_l1_b[s][i] -= dw;
                 l1_biases_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L2_PADDED; i++) {
             if (grad_l2_w[s][i] != 0.0f) {
-                l2_weights_f32[s][i] -= clamp_grad(l2_weights_f32[s][i], grad_l2_w[s][i]);
+                float dw = clamp_grad(l2_weights_f32[s][i], grad_l2_w[s][i]);
+                l2_weights_f32[s][i] -= dw;  delta_l2_w[s][i] -= dw;
                 l2_weights_cnt[s][i]++;
             }
         }
         if (grad_l2_b[s] != 0.0f) {
-            l2_bias_f32[s] -= clamp_grad(l2_bias_f32[s], grad_l2_b[s]);
+            float dw = clamp_grad(l2_bias_f32[s], grad_l2_b[s]);
+            l2_bias_f32[s] -= dw;  delta_l2_b[s] -= dw;
             l2_bias_cnt[s]++;
         }
     }
@@ -1638,9 +1671,11 @@ void nnue_apply_gradients()
             float *fw = ft_weights_f32 + (size_t)fi * NNUE_HALF_DIMS;
             float *gw = grad_ft_w      + (size_t)fi * NNUE_HALF_DIMS;
             uint32_t *cnt = ft_weights_cnt + (size_t)fi * NNUE_HALF_DIMS;
+            float *fd = ft_delta_f32 ? ft_delta_f32 + (size_t)fi * NNUE_HALF_DIMS : nullptr;
             for (int d = 0; d < NNUE_HALF_DIMS; d++) {
                 if (gw[d] != 0.0f) {
-                    fw[d] -= clamp_grad(fw[d], gw[d]);
+                    float dw = clamp_grad(fw[d], gw[d]);
+                    fw[d] -= dw;  if (fd) fd[d] -= dw;
                     cnt[d]++;
                     gw[d] = 0.0f;
                 }
@@ -1649,9 +1684,11 @@ void nnue_apply_gradients()
             float *pw  = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
             float *gpw = grad_psqt_w      + (size_t)fi * NNUE_PSQT_BKTS;
             uint32_t *pcnt = psqt_weights_cnt + (size_t)fi * NNUE_PSQT_BKTS;
+            float *pd = psqt_delta_f32 ? psqt_delta_f32 + (size_t)fi * NNUE_PSQT_BKTS : nullptr;
             for (int b = 0; b < NNUE_PSQT_BKTS; b++) {
                 if (gpw[b] != 0.0f) {
-                    pw[b] -= clamp_grad(pw[b], gpw[b]);
+                    float dw = clamp_grad(pw[b], gpw[b]);
+                    pw[b] -= dw;  if (pd) pd[b] -= dw;
                     pcnt[b]++;
                     gpw[b] = 0.0f;
                 }
@@ -1766,10 +1803,157 @@ static const float    TDLEAF_SCALE   = 128.0f;
 static const uint32_t TDLEAF_MAGIC   = 0x544D4C46u; // "TMLF"
 static const uint32_t TDLEAF_VERSION = 3u;
 
+// ---------------------------------------------------------------------------
+// tdleaf_acquire_lock / tdleaf_release_lock
+//
+// Advisory file lock using a companion "<path>.lock" file so that locking
+// survives atomic rename() of the main .tdleaf.bin.
+//   how = LOCK_EX (exclusive write) or LOCK_SH (shared read)
+// Returns the lock fd on success, -1 on failure.
+// ---------------------------------------------------------------------------
+static int tdleaf_acquire_lock(const char *path, int how)
+{
+    char lock_path[FILENAME_MAX];
+    snprintf(lock_path, sizeof(lock_path), "%s.lock", path);
+    int fd = open(lock_path, O_RDWR | O_CREAT, 0644);
+    if (fd < 0) {
+        fprintf(stderr, "TDLeaf: cannot open lock file %s\n", lock_path);
+        return -1;
+    }
+    if (flock(fd, how) != 0) {
+        fprintf(stderr, "TDLeaf: flock failed on %s\n", lock_path);
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+static void tdleaf_release_lock(int fd) { if (fd >= 0) close(fd); }
+
 bool nnue_save_fc_weights(const char *path)
 {
-    FILE *f = fopen(path, "wb");
-    if (!f) { fprintf(stderr, "TDLeaf: cannot write %s\n", path); return false; }
+    // ---- Acquire exclusive lock ----------------------------------------
+    int lock_fd = tdleaf_acquire_lock(path, LOCK_EX);
+    if (lock_fd < 0) {
+        fprintf(stderr, "TDLeaf: cannot acquire exclusive lock for %s\n", path);
+        return false;
+    }
+
+    // ---- Re-read the current file and merge our deltas on top ----------
+    // This picks up any changes written by other concurrent EXchess instances
+    // since we last synced.  After merge, float shadows = file + our_delta.
+    FILE *cur = fopen(path, "rb");
+    if (cur) {
+        uint32_t magic = 0, version = 0;
+        bool ok = (fread(&magic, 4, 1, cur) == 1 &&
+                   fread(&version, 4, 1, cur) == 1 &&
+                   magic == TDLEAF_MAGIC &&
+                   (version == TDLEAF_VERSION || version == 2u));
+        if (ok) {
+            // FC section: float32 × TDLEAF_SCALE per weight, then uint32 counts.
+            // Merge: shadow = file_value + our_delta; count = max(file, ours).
+            for (int s = 0; s < NNUE_LAYER_STACKS && ok; s++) {
+                auto merge_f = [&](float *shadow, float *delta, uint32_t *cnt, int n) -> bool {
+                    for (int i = 0; i < n; i++) {
+                        float raw;
+                        if (fread(&raw, sizeof(float), 1, cur) != 1) return false;
+                        shadow[i] = raw / TDLEAF_SCALE + delta[i];
+                        delta[i]  = 0.0f;
+                    }
+                    return true;
+                };
+                auto merge_cnt = [&](uint32_t *cnt, int n) -> bool {
+                    for (int i = 0; i < n; i++) {
+                        uint32_t fc;
+                        if (fread(&fc, sizeof(uint32_t), 1, cur) != 1) return false;
+                        if (fc > cnt[i]) cnt[i] = fc;
+                    }
+                    return true;
+                };
+                ok = merge_f(l0_biases_f32[s],  delta_l0_b[s], l0_biases_cnt[s],  NNUE_L0_SIZE)
+                  && merge_cnt(l0_biases_cnt[s],  NNUE_L0_SIZE)
+                  && merge_f(l0_weights_f32[s], delta_l0_w[s], l0_weights_cnt[s], NNUE_L0_SIZE * NNUE_L0_INPUT)
+                  && merge_cnt(l0_weights_cnt[s], NNUE_L0_SIZE * NNUE_L0_INPUT)
+                  && merge_f(l1_biases_f32[s],  delta_l1_b[s], l1_biases_cnt[s],  NNUE_L1_SIZE)
+                  && merge_cnt(l1_biases_cnt[s],  NNUE_L1_SIZE)
+                  && merge_f(l1_weights_f32[s], delta_l1_w[s], l1_weights_cnt[s], NNUE_L1_SIZE * NNUE_L1_PADDED)
+                  && merge_cnt(l1_weights_cnt[s], NNUE_L1_SIZE * NNUE_L1_PADDED)
+                  && merge_f(&l2_bias_f32[s],    &delta_l2_b[s], &l2_bias_cnt[s],   1)
+                  && merge_cnt(&l2_bias_cnt[s],   1)
+                  && merge_f(l2_weights_f32[s], delta_l2_w[s], l2_weights_cnt[s], NNUE_L2_PADDED)
+                  && merge_cnt(l2_weights_cnt[s], NNUE_L2_PADDED);
+            }
+            // FT/PSQT sparse section (v3 only).
+            if (ok && version == TDLEAF_VERSION && ft_weights_f32) {
+                uint32_t n_ft_rows = 0;
+                if (fread(&n_ft_rows, sizeof(uint32_t), 1, cur) == 1) {
+                    float tmp_w[NNUE_HALF_DIMS];
+                    float tmp_p[NNUE_PSQT_BKTS];
+                    uint32_t tmp_wc[NNUE_HALF_DIMS];
+                    uint32_t tmp_pc[NNUE_PSQT_BKTS];
+                    for (uint32_t k = 0; k < n_ft_rows; k++) {
+                        uint32_t fi;
+                        if (fread(&fi, sizeof(uint32_t), 1, cur) != 1 ||
+                            fi >= (uint32_t)NNUE_FT_INPUTS) break;
+                        if (fread(tmp_w,  sizeof(float),    NNUE_HALF_DIMS, cur) != (size_t)NNUE_HALF_DIMS ||
+                            fread(tmp_wc, sizeof(uint32_t), NNUE_HALF_DIMS, cur) != (size_t)NNUE_HALF_DIMS ||
+                            fread(tmp_p,  sizeof(float),    NNUE_PSQT_BKTS, cur) != (size_t)NNUE_PSQT_BKTS ||
+                            fread(tmp_pc, sizeof(uint32_t), NNUE_PSQT_BKTS, cur) != (size_t)NNUE_PSQT_BKTS)
+                            break;
+                        // Merge FT: shadow = file_value + our_delta; count = max.
+                        float    *fw  = ft_weights_f32   + (size_t)fi * NNUE_HALF_DIMS;
+                        uint32_t *wc  = ft_weights_cnt   + (size_t)fi * NNUE_HALF_DIMS;
+                        float    *fd  = ft_delta_f32     ? ft_delta_f32   + (size_t)fi * NNUE_HALF_DIMS : nullptr;
+                        for (int d = 0; d < NNUE_HALF_DIMS; d++) {
+                            fw[d] = tmp_w[d] / TDLEAF_SCALE + (fd ? fd[d] : 0.0f);
+                            if (fd) fd[d] = 0.0f;
+                            if (tmp_wc[d] > wc[d]) wc[d] = tmp_wc[d];
+                        }
+                        // Merge PSQT.
+                        float    *pw  = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
+                        uint32_t *pc  = psqt_weights_cnt + (size_t)fi * NNUE_PSQT_BKTS;
+                        float    *pd  = psqt_delta_f32   ? psqt_delta_f32 + (size_t)fi * NNUE_PSQT_BKTS : nullptr;
+                        for (int b = 0; b < NNUE_PSQT_BKTS; b++) {
+                            pw[b] = tmp_p[b] / TDLEAF_SCALE + (pd ? pd[b] : 0.0f);
+                            if (pd) pd[b] = 0.0f;
+                            if (tmp_pc[b] > pc[b]) pc[b] = tmp_pc[b];
+                        }
+                    }
+                }
+            }
+        }
+        fclose(cur);
+        // If merge failed partway, clear remaining FC deltas so we don't double-count
+        // them on the next write.  FT deltas for un-merged rows stay (non-zero) and
+        // will be applied correctly on the next successful sync.
+        if (!ok) {
+            memset(delta_l0_w, 0, sizeof(delta_l0_w));
+            memset(delta_l0_b, 0, sizeof(delta_l0_b));
+            memset(delta_l1_w, 0, sizeof(delta_l1_w));
+            memset(delta_l1_b, 0, sizeof(delta_l1_b));
+            memset(delta_l2_w, 0, sizeof(delta_l2_w));
+            memset(delta_l2_b, 0, sizeof(delta_l2_b));
+        }
+    } else {
+        // No existing file — first write.  Clear deltas (incorporated in shadow directly).
+        memset(delta_l0_w, 0, sizeof(delta_l0_w));
+        memset(delta_l0_b, 0, sizeof(delta_l0_b));
+        memset(delta_l1_w, 0, sizeof(delta_l1_w));
+        memset(delta_l1_b, 0, sizeof(delta_l1_b));
+        memset(delta_l2_w, 0, sizeof(delta_l2_w));
+        memset(delta_l2_b, 0, sizeof(delta_l2_b));
+        if (ft_delta_f32)   memset(ft_delta_f32,   0, (size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS  * sizeof(float));
+        if (psqt_delta_f32) memset(psqt_delta_f32, 0, (size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS * sizeof(float));
+    }
+
+    // ---- Write merged content to a temp file, then atomically rename ----
+    char tmp_path[FILENAME_MAX];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) {
+        fprintf(stderr, "TDLeaf: cannot write temp file %s\n", tmp_path);
+        tdleaf_release_lock(lock_fd);
+        return false;
+    }
     fwrite(&TDLEAF_MAGIC,   4, 1, f);
     fwrite(&TDLEAF_VERSION, 4, 1, f);
     for (int s = 0; s < NNUE_LAYER_STACKS; s++) {
@@ -1851,20 +2035,33 @@ bool nnue_save_fc_weights(const char *path)
     }
 
     fclose(f);
+
+    // Atomic rename: temp → final (replaces the old file in one syscall).
+    if (rename(tmp_path, path) != 0) {
+        fprintf(stderr, "TDLeaf: rename %s → %s failed\n", tmp_path, path);
+        tdleaf_release_lock(lock_fd);
+        return false;
+    }
+
+    tdleaf_release_lock(lock_fd);
     return true;
 }
 
 bool nnue_load_fc_weights(const char *path)
 {
+    // Acquire shared lock — allows concurrent reads but blocks writes.
+    int lock_fd = tdleaf_acquire_lock(path, LOCK_SH);
+    // Non-fatal if locking fails (e.g. first run before lock file exists); proceed.
+
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
+    if (!f) { tdleaf_release_lock(lock_fd); return false; }
     uint32_t magic = 0, version = 0;
     if (fread(&magic, 4, 1, f) != 1 || fread(&version, 4, 1, f) != 1) {
-        fclose(f); return false;
+        fclose(f); tdleaf_release_lock(lock_fd); return false;
     }
     if (magic != TDLEAF_MAGIC) {
         fprintf(stderr, "TDLeaf: bad magic in %s\n", path);
-        fclose(f); return false;
+        fclose(f); tdleaf_release_lock(lock_fd); return false;
     }
 
     // ---- Version 1: legacy int8/int32 format, no counts ----
@@ -1883,6 +2080,7 @@ bool nnue_load_fc_weights(const char *path)
             }
         }
         fclose(f);
+        tdleaf_release_lock(lock_fd);
         // Sync FP32 copies and zero counts (v1 has no count data).
         nnue_init_fp32_weights();
         printf("TDLeaf: loaded v1 FC weights from %s (will upgrade to v2 on next save)\n", path);
@@ -1892,7 +2090,7 @@ bool nnue_load_fc_weights(const char *path)
     // ---- Version 2 / 3: float32 × TDLEAF_SCALE + uint32 counts ----
     if (version != 2u && version != TDLEAF_VERSION) {
         fprintf(stderr, "TDLeaf: unsupported version %u in %s\n", version, path);
-        fclose(f); return false;
+        fclose(f); tdleaf_release_lock(lock_fd); return false;
     }
     bool ok = true;
     for (int s = 0; s < NNUE_LAYER_STACKS && ok; s++) {
@@ -1955,6 +2153,7 @@ bool nnue_load_fc_weights(const char *path)
     }
 
     fclose(f);
+    tdleaf_release_lock(lock_fd);
     if (!ok) {
         fprintf(stderr, "TDLeaf: read error in %s\n", path);
         return false;
@@ -1965,6 +2164,15 @@ bool nnue_load_fc_weights(const char *path)
     memset(grad_l1_b, 0, sizeof(grad_l1_b));
     memset(grad_l2_w, 0, sizeof(grad_l2_w));
     memset(grad_l2_b, 0, sizeof(grad_l2_b));
+    // Delta accumulators start at zero after a fresh load.
+    memset(delta_l0_w, 0, sizeof(delta_l0_w));
+    memset(delta_l0_b, 0, sizeof(delta_l0_b));
+    memset(delta_l1_w, 0, sizeof(delta_l1_w));
+    memset(delta_l1_b, 0, sizeof(delta_l1_b));
+    memset(delta_l2_w, 0, sizeof(delta_l2_w));
+    memset(delta_l2_b, 0, sizeof(delta_l2_b));
+    if (ft_delta_f32)   memset(ft_delta_f32,   0, (size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS  * sizeof(float));
+    if (psqt_delta_f32) memset(psqt_delta_f32, 0, (size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS * sizeof(float));
     nnue_requantize_fc();
     if (version == TDLEAF_VERSION)
         printf("TDLeaf: loaded v3 weights from %s (%d FT rows)\n", path, n_ft_loaded);
