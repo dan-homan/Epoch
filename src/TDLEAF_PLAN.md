@@ -1,20 +1,19 @@
-# TDLeaf(λ) NNUE Learning — Implementation Plan
+# TDLeaf(λ) NNUE Learning — Implementation Reference
 
 ## Overview
 
 TDLeaf(λ) is a temporal-difference reinforcement learning algorithm adapted for minimax
-search by Baxter, Tridgell, and Weaver ("Learning to Play Chess Using Temporal
-Differences", 2000).  It uses the game result and the sequence of root search scores to
-form TD errors, then backpropagates those errors through the NNUE network to update
-weights.
+search (Baxter, Tridgell, and Weaver, 2000).  It uses the game result and the sequence
+of NNUE evaluations at PV leaf positions to form TD errors, then backpropagates those
+errors through the NNUE network to update weights.
 
-The implementation is entirely optional and gated by a compile-time flag:
+Build with:
 
 ```sh
 perl comp.pl 2026_03_09a NNUE=1 TDLEAF=1
 ```
 
-When `TDLEAF=0` (default), none of the learning code is compiled in.
+All learning code is gated by `#if TDLEAF`; when `TDLEAF=0` (default) no overhead is added.
 
 ---
 
@@ -22,256 +21,168 @@ When `TDLEAF=0` (default), none of the learning code is compiled in.
 
 For a game of T half-moves:
 
-- Let `d_t` = root search score at ply t, normalised to (0, 1) via a sigmoid:
-  `d_t = 1 / (1 + exp(-score_t / K))` where K ≈ 400 cp (controls sigmoid steepness).
-- Let `z` = game result from White's perspective: 1.0 = White wins, 0.5 = draw, 0.0 =
-  Black wins.
-- All `d_t` are from White's perspective: if it is Black's turn, negate the raw score.
+- `d_t` = sigmoid of the **NNUE static evaluation at the PV leaf position** at ply t,
+  from White's perspective:
+  `d_t = 1 / (1 + exp(-score_white_t / K))`, K ≈ 400 cp.
+- `z` = game result from White's perspective: 1.0 = White wins, 0.5 = draw, 0.0 = Black wins.
 
 **Temporal difference errors (backward view):**
 
 ```
-e_T   = z - d_T
-e_t   = (d_{t+1} - d_t) + λ * e_{t+1}      for t = T-1 … 1
+e_{T-1} = z - d_{T-1}
+e_t     = (d_{t+1} - d_t) + λ * e_{t+1}     for t = T-2 … 0
 ```
 
-**Weight update:**
+**Weight update (gradient ascent on prediction accuracy):**
 
 ```
 Δw = α * Σ_t  e_t * ∇_w d_t
 ```
 
-where `∇_w d_t = d_t * (1 - d_t) * ∇_w score_t` (sigmoid derivative times network
-gradient at position t).
+where `∇_w d_t = d_t * (1 - d_t) / K * ∇_w score_t`.
 
-Recommended defaults: `λ = 0.7`, `α = 1e-5`.
+Defaults: `λ = 0.7`, `K = 400`, `TDLEAF_ALPHA = 20` (FC), `TDLEAF_ALPHA_FT = 0.008` (FT/PSQT).
 
----
-
-## Scope: Which Weights to Train
-
-**Phase A (initial implementation):** FC layers only.
-
-The FC layers are small (≈18 K weights × 8 stacks) and can be updated quickly.  The
-feature transformer (FT) is 46 MB and requires sparse gradient accumulation; it is
-deferred to Phase B.
-
-| Layer | Parameters per stack | Total (8 stacks) |
-|-------|---------------------|-----------------|
-| FC0 weights | 1,024 × 16 int8 | 131,072 |
-| FC0 biases  | 16 int32 | 128 |
-| FC1 weights | 32 × 32 int8 | 8,192 |
-| FC1 biases  | 32 int32 | 256 |
-| FC2 weights | 32 × 1 int8 | 256 |
-| FC2 bias    | 1 int32 | 8 |
-| **Total** | | **≈ 140 K** |
-
-**Phase B (optional, future):** FT weights.  Each active feature touches 1,024 int16
-weights.  A position activates ≈ 30 features per perspective, so ~60 K of the 23 M FT
-weights are touched per position — sparse enough to be tractable.
+**Key design choice:** `d_t` is computed from `nnue_evaluate()` (direct static eval of the
+PV leaf), not from the search score propagated from the root.  This ensures the sigmoid
+value and the forward-pass gradient are computed from the same NNUE evaluation of the same
+position, making the gradient self-consistent.
 
 ---
 
-## New Files
+## Scope: All NNUE Weights Are Trained
+
+| Layer | Parameters | Notes |
+|-------|-----------|-------|
+| FC0 weights/biases | 1,024×16 int8 + 16 int32, ×8 stacks | Quantized int8, float shadow |
+| FC1 weights/biases | 32×32 int8 + 32 int32, ×8 stacks | Same |
+| FC2 weights/bias   | 32 int8 + 1 int32, ×8 stacks | Same |
+| FT weights         | 22,528×1,024 int16 | Sparse update; float shadow on heap (~92 MB) |
+| PSQT weights       | 22,528×8 int32 | Sparse update; float shadow (~720 KB) |
+
+FT and PSQT are updated sparsely: only the ~30–60 feature rows active at each leaf
+position are touched.  `ft_dirty[FT_INPUTS]` tracks which rows received gradient during
+the game; only dirty rows are scanned in `nnue_apply_gradients`.
+
+---
+
+## File Structure
 
 | File | Contents |
 |------|----------|
-| `src/tdleaf.h` | Public interface, `TDGameRecord` struct, constants |
-| `src/tdleaf.cpp` | Score recording, TD error computation, gradient accumulation, weight update |
-
-`src/EXchess.cc` gains `#if TDLEAF #include "tdleaf.cpp" #endif`.
+| `src/tdleaf.h` | Hyperparameters, `TDRecord`, `TDGameRecord`, function declarations |
+| `src/tdleaf.cpp` | PV walking, TD error computation, gradient backprop hooks |
+| `src/nnue.cpp` | FP32 shadow arrays, forward pass, gradient accumulation, weight save/load |
+| `src/nnue.h` | `NNUEActivations` struct, `NNUE_FT_LR_SCALE`, TDLeaf function declarations |
 
 ---
 
 ## Data Structures
 
-### `TDRecord` (one per ply, stored in `TDGameRecord`)
+### `TDRecord` (per-ply snapshot, stored in `TDGameRecord`)
 
 ```cpp
 struct TDRecord {
-    int16_t acc[2][NNUE_HALF_DIMS];   // accumulator snapshot (2 KB)
-    int32_t psqt[2][NNUE_PSQT_BKTS]; // PSQT snapshot
-    int     score_cp;                  // raw centipawn score from White's POV
-    int     stack;                     // layer stack index used
-    bool    wtm;                       // White-to-move at this position
+    int16_t acc[2][NNUE_HALF_DIMS];          // accumulator at PV leaf (int16)
+    int32_t psqt[2][NNUE_PSQT_BKTS];        // PSQT at PV leaf
+    int     score_stm;                        // NNUE static eval at leaf, STM POV (cp)
+    int     stack;                            // layer-stack index (piece_count-1)/4
+    bool    wtm;                              // White to move at leaf
+    int     ft_idx[2][NNUE_MAX_FT_PER_PERSP]; // active FT feature indices
+    int8_t  n_ft[2];                          // active feature count per perspective
 };
 ```
 
-Memory: ≈ 2,120 bytes × 400 plies = ≈ 848 KB.  Acceptable.
+Memory: ≈ (2×2048 + 8×4 + 4+4+1 + 2×64×4 + 2) bytes × 400 plies ≈ 2.3 MB.
 
 ### `TDGameRecord`
 
 ```cpp
 struct TDGameRecord {
-    TDRecord   plies[MAX_GAME_PLY];
-    int        n_plies;
-    float      result;      // 1.0 / 0.5 / 0.0 (White POV)
+    TDRecord plies[MAX_GAME_PLY];   // one per half-move (max 400)
+    int      n_plies;               // plies recorded so far
 };
 ```
 
-One global instance; reset at the start of each game.
+One global instance in `game_rec`; `n_plies` reset to 0 at game start.
 
 ---
 
-## FP32 Weight Copies
+## PV Leaf Score
 
-The stored weights are quantized int8 (FC) and int16 (FT).  Gradient updates require
-FP32 precision to avoid rounding to zero on small steps.
+`tdleaf_record_ply` walks the PV from the root accumulator using `nnue_record_delta` /
+`nnue_apply_delta`, then calls `nnue_evaluate(leaf_acc, leaf_wtm, pc)` to get the leaf
+score.  `leaf_wtm = root_wtm XOR (pv_len & 1)` — the side to move at the leaf flips once
+per ply walked.
 
-```cpp
-// In nnue.cpp (inside #if TDLEAF guard):
-static float l0_weights_f32[NNUE_LAYER_STACKS][NNUE_L0_INPUT * NNUE_L0_SIZE];
-static float l0_biases_f32 [NNUE_LAYER_STACKS][NNUE_L0_SIZE];
-static float l1_weights_f32[NNUE_LAYER_STACKS][NNUE_L1_PADDED * NNUE_L1_SIZE];
-static float l1_biases_f32 [NNUE_LAYER_STACKS][NNUE_L1_SIZE];
-static float l2_weights_f32[NNUE_LAYER_STACKS][NNUE_L2_PADDED];
-static float l2_bias_f32   [NNUE_LAYER_STACKS];
+The score is always stored from the leaf's side-to-move perspective (`score_stm`).
+`tdleaf_update_after_game` converts to White's perspective as:
+`score_white = leaf_wtm ? score_stm : -score_stm`.
+
+To verify correctness at build time:
+
+```sh
+perl comp.pl 2026_03_09a NNUE=1 TDLEAF=1 TDLEAF_CHECK_SCORE=1
 ```
 
-Initialised from the quantized int8 arrays when `nnue_load()` is called (multiply by
-`1.0f / (1 << NNUE_WEIGHT_SHIFT)` to dequantize).
-
-After each gradient step, `nnue_requantize_fc()` writes the updated FP32 values back to
-the int8 arrays used by the forward pass:
-`l0_weights[s][i] = (int8_t)clamp(-127, 127, roundf(f32 * (1 << NNUE_WEIGHT_SHIFT)))`.
+This prints `direct` (NNUE leaf eval) vs `propagated` (root score with per-ply sign flip)
+for every ply, flagging differences > 300 cp.
 
 ---
 
-## Implementation Steps
+## Gradient Flow
 
-### Step 1 — Score recording
-
-**`src/define.h`**
-```cpp
-#ifndef TDLEAF
-#define TDLEAF 0
-#endif
+```
+FC2 output (positional)
+  → ∂/∂(positional) via cp_factor and wtm_sign
+  → FC2 weights/bias
+  → CReLU backward → FC1 pre-activation
+  → FC1 weights/bias
+  → dual-activation backward (SqrCReLU + CReLU on FC0 outputs 0–14)
+  → FC0 pre-activation
+  → FC0 weights/bias
+  → SqrCReLU backward on accumulator pairs
+  → g_acc[2][1024]  (gradient w.r.t. each accumulator unit per perspective)
+  → FT weight rows for each active feature index (sparse)
+  → PSQT weight rows for each active feature index (sparse)
 ```
 
-**`src/chess.h`** — extend `game_rec`:
-```cpp
-#if TDLEAF
-  TDGameRecord td_game;          // accumulator+score history for current game
-#endif
+`NNUE_FT_LR_SCALE = TDLEAF_ALPHA_FT / TDLEAF_ALPHA` scales down FT/PSQT gradients
+relative to FC.  Update both constants together if you change learning rates.
+
+---
+
+## Weight Persistence — `.tdleaf.bin` (version 3)
+
+Saved at `{exec_path}nn-ad9b42354671.tdleaf.bin`.  Format:
+
+```
+[v2 header: version(4) + 8 FC stacks + per-layer weight/bias/count arrays]
+[n_ft_rows(4 bytes)]
+[per dirty row: fi(4) + ft_w[1024]×128 as int32[1024] + ft_cnt[1024] as uint32[1024]
+                      + psqt_w[8]×128 as int32[8]    + psqt_cnt[8]  as uint32[8]]
 ```
 
-**`src/main.cpp`** — after each `ts.search()` call (line 476), add:
-```cpp
-#if TDLEAF
-  if (nnue_available)
-      tdleaf_record_ply(game.td_game, game.pos,
-                        game.ts.g_last, game.pos.wtm);
-#endif
+Values are stored at 128× resolution (divide by 128 on load) to preserve sub-integer
+drift across sessions.  Update counts enable weighted averaging of concurrent training runs.
+
+Version 2 files (FC only) are still accepted on load; a notice is printed and the file
+will be upgraded to version 3 on the next save.
+
+---
+
+## Initialization
+
+When no `.tdleaf.bin` is found, the pretrained Stockfish 15.1 FC weights (from the
+`.nnue` file) are used automatically.
+
+To start training from scratch with zeroed FC/FT weights and PSQT = 100 cp/piece:
+
+```sh
+./EXchess_v... --init-tdleaf-zero
 ```
 
-At game start (`new_game` / `setboard` sites), reset:
-```cpp
-#if TDLEAF
-  game.td_game.n_plies = 0;
-#endif
-```
-
-**`src/tdleaf.cpp`** — `tdleaf_record_ply()`:
-- Copy `acc.acc[0..1][0..1023]` and `acc.psqt` from the current root node's accumulator
-  (available in `game.ts.tdata[0].n[0]` — the root search node after search returns).
-- Convert raw score to White POV: `score_w = wtm ? score : -score`.
-- Append to `td_game.plies[n_plies++]`.
-
-### Step 2 — Game result extraction
-
-**`src/main.cpp`** — at each site where `game.over = 1` is set, determine result:
-```cpp
-#if TDLEAF
-  float td_result = 0.5f;           // default: draw
-  if (strstr(game.overstring, "1-0"))        td_result = 1.0f;
-  else if (strstr(game.overstring, "0-1"))   td_result = 0.0f;
-  if (nnue_available && game.td_game.n_plies > 0)
-      tdleaf_update_after_game(&game.td_game, td_result);
-#endif
-```
-
-Also hook the `"result"` xboard command (already sets `game.over = 1`) to parse the
-result string from xboard (format: `"result 1-0 {White mates}"`).
-
-### Step 3 — Forward pass with saved activations
-
-Add to `src/nnue.cpp` (inside `#if TDLEAF`):
-
-```cpp
-struct NNUEActivations {
-    float l0_in [NNUE_L0_INPUT];     // SqrCReLU output (FP32)
-    float fc0_raw[NNUE_L0_SIZE];     // FC0 pre-activation
-    float fc1_in [NNUE_L1_PADDED];   // dual-activation output
-    float fc1_raw[NNUE_L1_SIZE];     // FC1 pre-activation
-    float fc2_in [NNUE_L2_PADDED];   // CReLU output
-    float fc2_raw;                    // FC2 output (scalar)
-    float fwdOut;                     // passthrough
-    float positional;
-    int   stack;
-};
-
-// Recomputes the forward pass in FP32 from a saved accumulator,
-// filling 'act' with all intermediate activations.
-void nnue_forward_fp32(const TDRecord &rec, NNUEActivations &act);
-```
-
-This function mirrors `nnue_evaluate()` but in FP32 (no NEON), saving every
-intermediate value needed for backprop.
-
-### Step 4 — Backpropagation
-
-`tdleaf_backprop()` takes a single `TDRecord`, runs `nnue_forward_fp32()`, then
-computes gradients from output back to FC0 inputs using the chain rule.  Results are
-accumulated into per-stack gradient arrays:
-
-```cpp
-static float grad_l0_w[NNUE_LAYER_STACKS][NNUE_L0_INPUT * NNUE_L0_SIZE];
-static float grad_l0_b[NNUE_LAYER_STACKS][NNUE_L0_SIZE];
-static float grad_l1_w[NNUE_LAYER_STACKS][NNUE_L1_PADDED * NNUE_L1_SIZE];
-// ... etc.
-```
-
-Activation derivatives:
-- **SqrCReLU**: `d/dx[clamp(0,127, x²>>19)]` = `2x/2^19` when `x²>>19 ∈ (0,127)`, else 0.
-  In practice use a straight-through estimator through the clamp for simplicity.
-- **CReLU**: `d/dx[clamp(0,127, x)] = 1` when `x ∈ (0,127)`, else 0.
-
-Score-to-sigmoid gradient:
-```
-∂loss/∂score = e_t * d_t * (1 - d_t) * (1.0f / K) * (100.0f / 5776.0f)
-```
-where `d_t = sigmoid(score_white / K)`.
-
-### Step 5 — Weight update and requantization
-
-After processing all plies in the game:
-```cpp
-void tdleaf_apply_gradients(float alpha) {
-    for (int s = 0; s < NNUE_LAYER_STACKS; s++) {
-        for (int i = 0; i < NNUE_L0_INPUT * NNUE_L0_SIZE; i++)
-            l0_weights_f32[s][i] -= alpha * grad_l0_w[s][i];
-        // ... FC1, FC2 similarly
-    }
-    nnue_requantize_fc();   // update int8 arrays from FP32
-}
-```
-
-`nnue_requantize_fc()` clamps and rounds each FP32 weight back to int8, then writes into
-the `l0_weights / l1_weights / l2_weights` arrays used by the live forward pass.  The
-score hash must be cleared after requantization (call `clear_score_table()`).
-
-### Step 6 — Weight persistence
-
-```cpp
-// Append updated FC layer bytes to a separate delta file, or overwrite
-// the original .nnue.  The latter is simpler but destructive.
-bool nnue_save_fc_weights(const char *path);
-```
-
-**Recommended:** save to a companion file `nn-ad9b42354671.tdleaf.bin` containing only
-the 8 × (FC0+FC1+FC2) layer stacks (≈ 140 KB).  At load time, if this file exists,
-load the FT from the original .nnue and the FC layers from the companion file.  This
-avoids corrupting the original network and makes it easy to reset learning.
+This calls `nnue_init_zero_weights()` and saves the resulting `.tdleaf.bin` immediately.
 
 ---
 
@@ -279,61 +190,29 @@ avoids corrupting the original network and makes it easy to reset learning.
 
 | Location | Change |
 |----------|--------|
-| `src/define.h` | Add `#ifndef TDLEAF / #define TDLEAF 0 / #endif` |
-| `src/chess.h` — `game_rec` | Add `TDGameRecord td_game` inside `#if TDLEAF` |
-| `src/nnue.cpp` — `nnue_load()` | After loading: init FP32 copies inside `#if TDLEAF` |
-| `src/main.cpp` — after `ts.search()` | Call `tdleaf_record_ply()` inside `#if TDLEAF` |
-| `src/main.cpp` — `game.over = 1` sites | Call `tdleaf_update_after_game()` inside `#if TDLEAF` |
-| `src/main.cpp` — `"result"` command | Parse result string; call update inside `#if TDLEAF` |
-| `src/main.cpp` — `new_game` / `setboard` | Reset `td_game.n_plies = 0` inside `#if TDLEAF` |
-| `src/EXchess.cc` | Add `#if TDLEAF #include "tdleaf.cpp" #endif` |
-| `src/comp.pl` | Support `TDLEAF=1` flag → append `-D TDLEAF=1` |
-
-The changes to existing files are all small, inside `#if TDLEAF` guards, and do not
-affect compilation or behaviour when `TDLEAF=0`.
+| `src/define.h` | `#ifndef TDLEAF / #define TDLEAF 0 / #endif` |
+| `src/chess.h` — `game_rec` | `TDGameRecord td_game` inside `#if TDLEAF` |
+| `src/nnue.cpp` — `nnue_load()` | Calls `nnue_init_fp32_weights()` inside `#if TDLEAF` |
+| `src/main.cpp` — after `ts.search()` | `tdleaf_record_ply()` with root acc + PV |
+| `src/main.cpp` — `game.over = 1` sites | `tdleaf_update_after_game()` |
+| `src/main.cpp` — `new_game` / `setboard` | `td_game.n_plies = 0` |
+| `src/EXchess.cc` | `#if TDLEAF #include "tdleaf.cpp" #endif` |
+| `src/comp.pl` | `TDLEAF=1` flag → `-D TDLEAF=1` |
 
 ---
 
-## Hyperparameters
+## Diagnostic Flags
 
-Exposed via `setvalue` command (already supported by EXchess) or environment variables:
-
-| Parameter | Default | Notes |
-|-----------|---------|-------|
-| `td_lambda` | 0.7 | Eligibility trace decay |
-| `td_alpha` | 1e-5 | Learning rate |
-| `td_K` | 400 | Sigmoid temperature (cp) |
-| `td_min_plies` | 10 | Skip very short games |
-| `td_save_every` | 1 | Save weights after every N games |
+| Flag | Effect |
+|------|--------|
+| `TDLEAF=1` | Enable all learning code |
+| `TDLEAF_READONLY=1` | Load weights but skip gradient updates (inference only) |
+| `TDLEAF_CHECK_SCORE=1` | Print direct vs propagated leaf score on every ply |
 
 ---
 
-## Testing Strategy
+## Self-Play Driver
 
-1. **Gradient check**: For one position, compute `∂score/∂w` numerically
-   (`(score(w+ε) - score(w-ε)) / 2ε`) and compare against the analytical gradient.
-   Should agree to within 1%.
-
-2. **Smoke test**: Play 10 self-play games with `TDLEAF=1`.  Verify weights change, no
-   crash, scores remain in a sane range.
-
-3. **Sanity match**: After 100 self-play training games, run a 100-game match of the
-   trained net vs the untrained net.  Expect a small but non-zero positive score.
-
-4. **Long-run match**: After 1,000+ games, match trained vs `EXchess_vtest` (classical).
-   Goal: maintain or improve over the 96.0% baseline.
-
----
-
-## What NOT to Do
-
-- **Do not update FT weights in Phase A**: the 46 MB sparse update is correct in theory
-  but hard to implement and quantize correctly; the FC layers are where the
-  position-specific signal lives anyway.
-- **Do not use a high learning rate**: int8 quantization means FP32 changes smaller than
-  `1/(64)` ≈ 0.016 are invisible; but large learning rates will cause catastrophic
-  forgetting.
-- **Do not clear the score hash between every ply**: clear it once after
-  `nnue_requantize_fc()` at end-of-game, not during.
-- **Do not train during time-critical games**: the backprop + update is cheap (< 1 ms
-  per game) but should be called only after `game.over = 1`, not during search.
+`run/tdleaf_selfplay.py` manages engine vs engine games, captures results, and runs the
+trained binary continuously.  `run/compare_fc_weights.py` compares a `.tdleaf.bin` file
+against the baseline `.nnue` and shows FC, FT, and PSQT weight statistics.

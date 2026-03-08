@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-compare_fc_weights.py — visually compare FC layers from a .tdleaf.bin file
-against the original FC weights in a .nnue file.
+compare_fc_weights.py — compare FC layers from a .tdleaf.bin file against the
+original .nnue weights; also summarise FT and PSQT layers (now trainable by TDLeaf).
 
 Usage (from run/ directory):
     python3 compare_fc_weights.py nn-ad9b42354671.nnue nn-ad9b42354671.tdleaf.bin
     python3 compare_fc_weights.py nn-ad9b42354671.nnue nn-ad9b42354671.tdleaf.bin --save
+    python3 compare_fc_weights.py nn-ad9b42354671.nnue nn-ad9b42354671.tdleaf.bin --ft-weights
 """
 
 import argparse
@@ -46,7 +47,8 @@ STACK_BYTES = (4 +                           # stack hash
 TDLEAF_MAGIC    = 0x544D4C46   # "TMLF"
 TDLEAF_VERSION1 = 1
 TDLEAF_VERSION2 = 2
-TDLEAF_SCALE    = 128.0        # v2: file stores w_f32 × TDLEAF_SCALE
+TDLEAF_VERSION3 = 3
+TDLEAF_SCALE    = 128.0        # v2/v3: file stores w_f32 × TDLEAF_SCALE
 
 # ---------------------------------------------------------------------------
 # vdotq layout converters  (flat vdotq array → natural [o, i] array)
@@ -80,6 +82,70 @@ def vdotq_to_natural_fc1(flat):
 # File readers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# LEB128 helpers  (used for reading FT biases, weights, and PSQT from .nnue)
+# ---------------------------------------------------------------------------
+
+LEB128_MAGIC = b'COMPRESSED_LEB128'
+
+def _decode_leb128_i16(data: bytes, count: int) -> np.ndarray:
+    """Decode a signed-LEB128 byte stream into a numpy int16 array."""
+    out = np.empty(count, dtype=np.int32)
+    pos = 0
+    for i in range(count):
+        val = shift = 0
+        while True:
+            b = data[pos]; pos += 1
+            val |= (b & 0x7F) << shift
+            shift += 7
+            if not (b & 0x80):
+                break
+        if shift < 16 and (data[pos - 1] & 0x40):
+            val |= -(1 << shift)
+        out[i] = val
+    return out.astype(np.int16)
+
+
+def _decode_leb128_i32(data: bytes, count: int) -> np.ndarray:
+    """Decode a signed-LEB128 byte stream into a numpy int32 array."""
+    out = np.empty(count, dtype=np.int64)
+    pos = 0
+    for i in range(count):
+        val = shift = 0
+        while True:
+            b = data[pos]; pos += 1
+            val |= (b & 0x7F) << shift
+            shift += 7
+            if not (b & 0x80):
+                break
+        if shift < 32 and (data[pos - 1] & 0x40):
+            val |= -(1 << shift)
+        out[i] = val
+    return out.astype(np.int32)
+
+
+def _read_leb128_section_i16(f, count):
+    magic = f.read(17)
+    if magic != LEB128_MAGIC:
+        f.seek(-17, 1)
+        return np.frombuffer(f.read(count * 2), dtype='<i2').copy()
+    nbytes = struct.unpack('<I', f.read(4))[0]
+    return _decode_leb128_i16(f.read(nbytes), count)
+
+
+def _read_leb128_section_i32(f, count):
+    magic = f.read(17)
+    if magic != LEB128_MAGIC:
+        f.seek(-17, 1)
+        return np.frombuffer(f.read(count * 4), dtype='<i4').copy()
+    nbytes = struct.unpack('<I', f.read(4))[0]
+    return _decode_leb128_i32(f.read(nbytes), count)
+
+
+# ---------------------------------------------------------------------------
+# File readers
+# ---------------------------------------------------------------------------
+
 def read_nnue_fc(path):
     """
     Read FC layers from a .nnue file.  Weights are in output-major natural
@@ -104,6 +170,56 @@ def read_nnue_fc(path):
     return data
 
 
+def read_nnue_ft(path, read_ft_weights=False):
+    """
+    Read FT biases, PSQT weights (and optionally FT weights) from a .nnue file.
+
+    Navigates the header dynamically (desc_size is variable), so it works
+    correctly regardless of LEB128 compression in the FT section.
+
+    Returns a dict with:
+      'ft_bias'   — int16 [HALF_DIMS]
+      'psqt_w'    — int32 [FT_INPUTS × PSQT_BKTS]
+      'ft_w'      — int16 [FT_INPUTS × HALF_DIMS]  (only if read_ft_weights=True)
+      'ft_w_read' — bool indicating whether ft_w was loaded
+    """
+    result = {'ft_w_read': False}
+
+    with open(path, 'rb') as f:
+        # Parse header to find exact FT section start.
+        _version  = f.read(4)
+        _filehash = f.read(4)
+        desc_size = struct.unpack('<I', f.read(4))[0]
+        f.seek(desc_size, 1)          # skip architecture description
+        f.read(4)                     # skip ft_hash
+
+        # FT biases: HALF_DIMS int16 (LEB128)
+        print("  Reading FT biases ...", flush=True)
+        result['ft_bias'] = _read_leb128_section_i16(f, HALF_DIMS)
+
+        # FT weights: FT_INPUTS × HALF_DIMS int16 (LEB128, large)
+        ft_w_count = FT_INPUTS * HALF_DIMS  # 23,068,672
+        if read_ft_weights:
+            print(f"  Reading FT weights ({ft_w_count:,} int16, may take ~30s) ...", flush=True)
+            result['ft_w'] = _read_leb128_section_i16(f, ft_w_count)
+            result['ft_w_read'] = True
+        else:
+            # Skip: read the compression header to know how many bytes to jump.
+            magic = f.read(17)
+            if magic == LEB128_MAGIC:
+                nbytes = struct.unpack('<I', f.read(4))[0]
+                f.seek(nbytes, 1)              # skip compressed payload
+            else:
+                f.seek(-17 + ft_w_count * 2, 1)   # skip raw int16 data
+
+        # PSQT weights: FT_INPUTS × PSQT_BKTS int32 (LEB128)
+        print("  Reading PSQT weights ...", flush=True)
+        psqt_count = FT_INPUTS * PSQT_BKTS   # 180,224
+        result['psqt_w'] = _read_leb128_section_i32(f, psqt_count).reshape(FT_INPUTS, PSQT_BKTS)
+
+    return result
+
+
 def read_tdleaf_fc(path):
     """
     Read FC layers from a .tdleaf.bin file.
@@ -125,7 +241,7 @@ def read_tdleaf_fc(path):
         if magic != TDLEAF_MAGIC:
             sys.exit(f"Error: bad magic {magic:#010x} in {path}")
 
-        if version == TDLEAF_VERSION2:
+        if version == TDLEAF_VERSION2 or version == TDLEAF_VERSION3:
             data['_has_counts'] = True
             for _ in range(N_STACKS):
                 def rf(n, fh=f):
@@ -172,6 +288,30 @@ def read_tdleaf_fc(path):
         else:
             sys.exit(f"Error: unknown .tdleaf.bin version {version} in {path}")
 
+        # v3: sparse FT/PSQT section after FC stacks
+        if version == TDLEAF_VERSION3:
+            n_ft_rows = struct.unpack('<I', f.read(4))[0]
+            if n_ft_rows > 0:
+                fi_arr   = np.empty(n_ft_rows, dtype=np.uint32)
+                ft_w_arr = np.empty((n_ft_rows, HALF_DIMS), dtype=np.float32)
+                ft_c_arr = np.empty((n_ft_rows, HALF_DIMS), dtype=np.uint32)
+                ps_w_arr = np.empty((n_ft_rows, PSQT_BKTS), dtype=np.float32)
+                ps_c_arr = np.empty((n_ft_rows, PSQT_BKTS), dtype=np.uint32)
+                for k in range(n_ft_rows):
+                    fi_arr[k]    = struct.unpack('<I', f.read(4))[0]
+                    ft_w_arr[k]  = np.frombuffer(f.read(HALF_DIMS * 4), dtype=np.float32) / TDLEAF_SCALE
+                    ft_c_arr[k]  = np.frombuffer(f.read(HALF_DIMS * 4), dtype=np.uint32)
+                    ps_w_arr[k]  = np.frombuffer(f.read(PSQT_BKTS * 4), dtype=np.float32) / TDLEAF_SCALE
+                    ps_c_arr[k]  = np.frombuffer(f.read(PSQT_BKTS * 4), dtype=np.uint32)
+                data['ft_fi']     = fi_arr
+                data['ft_w']      = ft_w_arr
+                data['ft_w_cnt']  = ft_c_arr
+                data['psqt_w']    = ps_w_arr
+                data['psqt_cnt']  = ps_c_arr
+            else:
+                data['ft_fi'] = np.empty(0, dtype=np.uint32)
+            data['n_ft_rows'] = n_ft_rows
+
     return data
 
 # ---------------------------------------------------------------------------
@@ -205,9 +345,22 @@ def bias_delta_stats(orig, upd):
 # Text summary
 # ---------------------------------------------------------------------------
 
-def print_summary(orig, upd):
+def _wstats(arr, is_int32=False):
+    """Return (n, min, max, mean, std, pct_zero) for a weight array."""
+    a = arr.astype(np.int64 if is_int32 else np.int32)
+    return dict(n=a.size,
+                wmin=int(a.min()), wmax=int(a.max()),
+                mean=float(a.mean()), std=float(a.std()),
+                pct_zero=100.0 * float(np.mean(a == 0)))
+
+
+def print_summary(orig, upd, ft_data=None):
     has_counts = upd.get('_has_counts', False)
 
+    # -----------------------------------------------------------------------
+    # FC weight delta table
+    # -----------------------------------------------------------------------
+    print("\n━━━━  FC layer changes (trained + persisted to .tdleaf.bin)  ━━━━")
     print("\n┌──────────┬────────────────┬───────────────┬───────────────┬─────────────────┐")
     print("│  Layer   │    Changed     │   % Changed   │    Δ range    │   mean ± std    │")
     print("├──────────┼────────────────┼───────────────┼───────────────┼─────────────────┤")
@@ -240,9 +393,9 @@ def print_summary(orig, upd):
         print(f"  Stack {s}  {st['n_changed']:>6}/{st['n']:<4} {st['pct']:>7.2f}%"
               f"  {st['dmin']:>6}  {st['dmax']:>6}  {abs(st['dmean']):>9.3f}")
 
-    # Update count summary (v2 only)
+    # Update count summary (v2/v3)
     if has_counts:
-        print("\nUpdate count summary (v2 — times each weight was updated across sessions):")
+        print("\nFC update count summary (times each weight was updated across sessions):")
         print(f"  {'Layer':<10} {'Total wts':>10} {'Ever updated':>14} {'Max cnt':>9} {'Mean cnt (>0)':>14}")
         for layer_name, key_w, key_b in [
                 ('FC0 wts',  'fc0_w_cnt',   'fc0_bias_cnt'),
@@ -258,6 +411,105 @@ def print_summary(orig, upd):
             label = layer_name[:-3] + 'bis'
             print(f"  {label:<10} {bc.size:>10} {len(bnz):>14} {int(bc.max()):>9}"
                   f" {(bnz.mean() if len(bnz) else 0.0):>14.2f}")
+
+    # -----------------------------------------------------------------------
+    # FT / PSQT summary (trained + persisted as of v3)
+    # -----------------------------------------------------------------------
+    print()
+    n_ft_rows = upd.get('n_ft_rows', None)
+    if n_ft_rows is not None:
+        print(f"━━━━  FT / PSQT weights (trained + persisted to .tdleaf.bin v3)  ━━━━")
+        print(f"      {n_ft_rows:,} of {FT_INPUTS:,} feature rows have training history")
+    else:
+        print("━━━━  FT / PSQT weights (v3 data not in .tdleaf.bin)  ━━━━")
+        print("      Run more training games — FT/PSQT saved starting with v3 format")
+    print()
+
+    if ft_data is None:
+        print("  (baseline .nnue stats not read)")
+    else:
+        # FT biases baseline
+        fb  = ft_data['ft_bias']
+        fbs = _wstats(fb)
+        print(f"  FT biases (baseline)  {fbs['n']:>7,} int16   "
+              f"range [{fbs['wmin']:+6d}, {fbs['wmax']:+6d}]  "
+              f"mean {fbs['mean']:+7.1f} ± {fbs['std']:.1f}")
+
+        # FT weights: if v3 data is present, show learned values; else baseline
+        if n_ft_rows and n_ft_rows > 0 and 'ft_w' in upd:
+            fw_learned = upd['ft_w']          # [n_ft_rows, HALF_DIMS]
+            fw_cnt     = upd['ft_w_cnt']      # [n_ft_rows, HALF_DIMS]
+            fw_flat    = fw_learned.ravel()
+            cnt_flat   = fw_cnt.ravel()
+            n_updated  = int(np.sum(cnt_flat > 0))
+            max_cnt    = int(cnt_flat.max()) if len(cnt_flat) else 0
+            nz_cnt     = cnt_flat[cnt_flat > 0]
+            print(f"  FT weights (learned)  {n_ft_rows:>7,} rows × {HALF_DIMS} dims = "
+                  f"{n_ft_rows * HALF_DIMS:,} values")
+            print(f"    weight range  [{fw_flat.min():+.3f}, {fw_flat.max():+.3f}]  "
+                  f"mean {fw_flat.mean():+.3f} ± {fw_flat.std():.3f}")
+            print(f"    update counts  ever-updated: {n_updated:,}/{n_ft_rows*HALF_DIMS:,}  "
+                  f"max: {max_cnt}  mean(>0): {nz_cnt.mean():.1f}")
+        else:
+            ft_total = FT_INPUTS * HALF_DIMS
+            if ft_data.get('ft_w_read'):
+                fw  = ft_data['ft_w']
+                fws = _wstats(fw)
+                print(f"  FT weights (baseline) {fws['n']:>12,} int16   "
+                      f"range [{fws['wmin']:+6d}, {fws['wmax']:+6d}]  "
+                      f"mean {fws['mean']:+.3f} ± {fws['std']:.3f}")
+            else:
+                print(f"  FT weights (baseline) {ft_total:>12,} int16   "
+                      f"(not read — use --ft-weights to load)")
+
+        # PSQT: if v3, compare learned vs baseline for dirty rows
+        pw_base = ft_data['psqt_w']   # [FT_INPUTS, PSQT_BKTS], baseline int32 → float
+        pws = _wstats(pw_base, is_int32=True)
+        print(f"  PSQT baseline         {pws['n']:>7,} int32   "
+              f"range [{pws['wmin']:+6d}, {pws['wmax']:+6d}]  "
+              f"mean {pws['mean']:+7.1f} ± {pws['std']:.1f}")
+
+        if n_ft_rows and n_ft_rows > 0 and 'psqt_w' in upd:
+            ps_learned = upd['psqt_w']    # [n_ft_rows, PSQT_BKTS]  float at int32 scale
+            ps_cnt     = upd['psqt_cnt']  # [n_ft_rows, PSQT_BKTS]
+            fi_arr     = upd['ft_fi']     # [n_ft_rows]
+            # Compute delta vs baseline for the dirty rows
+            baseline_dirty = pw_base[fi_arr]  # [n_ft_rows, PSQT_BKTS] — float32 from int32
+            delta = ps_learned - baseline_dirty.astype(np.float32)
+            cnt_flat = ps_cnt.ravel()
+            nz_cnt   = cnt_flat[cnt_flat > 0]
+            print(f"  PSQT learned          {n_ft_rows:>7,} rows × {PSQT_BKTS} buckets")
+            print(f"    Δ range  [{delta.min():+.1f}, {delta.max():+.1f}]  "
+                  f"mean Δ {delta.mean():+.3f} ± {delta.std():.3f}")
+            print(f"    update counts  max: {int(cnt_flat.max())}  "
+                  f"mean(>0): {nz_cnt.mean():.1f}" if len(nz_cnt) else
+                  f"    update counts  (none)")
+
+            # Per-bucket delta stats for learned rows
+            print()
+            print(f"  PSQT Δ per-bucket (learned − baseline, dirty rows only):")
+            print(f"  {'Bucket':>8} {'Rows':>8} {'Δ min':>10} {'Δ max':>10} "
+                  f"{'mean Δ':>10} {'max cnt':>9} {'mean cnt(>0)':>14}")
+            for b in range(PSQT_BKTS):
+                d_col = delta[:, b]
+                c_col = ps_cnt[:, b]
+                nz_c  = c_col[c_col > 0]
+                print(f"  {b:>8} {n_ft_rows:>8,} {d_col.min():>10.1f} {d_col.max():>10.1f}"
+                      f" {d_col.mean():>10.3f} {int(c_col.max()):>9}"
+                      f" {nz_c.mean():>14.1f}" if len(nz_c) else
+                      f"  {b:>8} {n_ft_rows:>8,} {d_col.min():>10.1f} {d_col.max():>10.1f}"
+                      f" {d_col.mean():>10.3f} {int(c_col.max()):>9}         —")
+        else:
+            # No v3 learned data — show baseline per-bucket
+            print()
+            print(f"  PSQT per-bucket baseline (bucket 0 = most material):")
+            print(f"  {'Bucket':>8} {'Count':>10} {'Min':>8} {'Max':>8} "
+                  f"{'Mean':>10} {'Std':>10} {'% zero':>8}")
+            for b in range(PSQT_BKTS):
+                col = pw_base[:, b]
+                nz  = int(np.sum(col == 0))
+                print(f"  {b:>8} {len(col):>10,} {int(col.min()):>8} {int(col.max()):>8}"
+                      f" {col.mean():>10.1f} {col.std():>10.1f} {100*nz/len(col):>7.1f}%")
 
 # ---------------------------------------------------------------------------
 # Plotting
@@ -445,15 +697,18 @@ def _plot_bias_changes_unused(orig, upd, save):
 
 def main():
     ap = argparse.ArgumentParser(
-        description='Compare FC weights: original .nnue vs updated .tdleaf.bin',
+        description='Compare FC weights (.nnue vs .tdleaf.bin); summarise FT/PSQT trainable layers.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument('nnue',   help='.nnue file (original weights)')
-    ap.add_argument('tdleaf', help='.tdleaf.bin file (updated weights)')
+    ap.add_argument('tdleaf', help='.tdleaf.bin file (updated FC weights)')
     ap.add_argument('--save', action='store_true',
                     help='Save plots to PNG files instead of (or in addition to) showing')
     ap.add_argument('--no-show', action='store_true',
                     help='Do not open interactive windows (implies --save)')
+    ap.add_argument('--ft-weights', action='store_true',
+                    help='Also decode FT weights from .nnue (23M int16, ~30s). '
+                         'Always shows FT biases and PSQT regardless.')
     args = ap.parse_args()
 
     if args.no_show:
@@ -469,15 +724,18 @@ def main():
         if not os.path.isfile(path):
             sys.exit(f"Error: file not found: {path}")
 
-    print(f"Reading {args.nnue} ...")
+    print(f"Reading FC layers from {args.nnue} ...")
     orig = read_nnue_fc(args.nnue)
     orig['_name'] = os.path.basename(args.nnue)
 
-    print(f"Reading {args.tdleaf} ...")
+    print(f"Reading FC layers from {args.tdleaf} ...")
     upd = read_tdleaf_fc(args.tdleaf)
     upd['_name'] = os.path.basename(args.tdleaf)
 
-    print_summary(orig, upd)
+    print(f"Reading FT/PSQT from {args.nnue} ...")
+    ft_data = read_nnue_ft(args.nnue, read_ft_weights=args.ft_weights)
+
+    print_summary(orig, upd, ft_data)
 
     plot_overview(orig, upd, args.save)
     plot_fc1_per_stack(orig, upd, args.save)

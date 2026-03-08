@@ -115,6 +115,9 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count);
 // ---------------------------------------------------------------------------
 #if TDLEAF
 
+// Max active HalfKAv2 features per perspective (32 pieces max → 32 features; 64 is safe).
+static const int NNUE_MAX_FT_PER_PERSP = 64;
+
 // Intermediate activations saved during the FP32 forward pass (for backprop).
 struct NNUEActivations {
     float l0_in  [NNUE_L0_INPUT];    // SqrCReLU output from acc pairs
@@ -126,7 +129,17 @@ struct NNUEActivations {
     float fwdOut;                     // passthrough: fc0_raw[15] * 9600/8128
     float positional;                 // fc2_raw + fwdOut
     int   stack;                      // layer stack index
+    // FT/PSQT backprop fields — filled by tdleaf_update_after_game before nnue_accumulate_gradients:
+    int16_t acc_raw[2][NNUE_HALF_DIMS];       // raw int16 accumulator (for SqrCReLU gradient)
+    int     ft_idx[2][NNUE_MAX_FT_PER_PERSP]; // active feature indices, indexed by actual persp
+    int8_t  n_ft[2];                           // active feature count per perspective
+    int8_t  stm_persp;                         // STM perspective index (WHITE=1, BLACK=0)
 };
+
+// Initialise all FC and FT weights to zero, PSQT to 100 cp/piece equivalent.
+// Used when starting training from scratch (no .tdleaf.bin found).
+// Writes zero to FC int8 inference arrays and PSQT_100CP to int32 PSQT arrays.
+void nnue_init_zero_weights();
 
 // Initialise FP32 shadow copies from the just-loaded int8 arrays.
 // Called once at end of nnue_load().

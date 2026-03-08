@@ -24,13 +24,22 @@
 // Hyperparameters (can be overridden by setvalue/environment at runtime)
 // ---------------------------------------------------------------------------
 static const float TDLEAF_LAMBDA          = 0.7f;   // eligibility trace decay
-static const float TDLEAF_ALPHA           = 20.0f; // learning rate (raw-int-scale weights)
+static const float TDLEAF_ALPHA           = 200.0f;  // learning rate for FC layers
+// FT/PSQT learning rate — much smaller than FC because FT weights are int16 (256× finer
+// than int8) and are shared across all positions.  If you change this, also update
+// NNUE_FT_LR_SCALE in nnue.h to match TDLEAF_ALPHA_FT / TDLEAF_ALPHA.
+static const float TDLEAF_ALPHA_FT        = 200.0f; //0.078f; // learning rate for FT/PSQT weights
+// FT/PSQT learning rate scale = TDLEAF_ALPHA_FT / TDLEAF_ALPHA.
+// Update this whenever changing those constants in tdleaf.h.
+// Default: 0.078 / 20.0 = 0.0004
+static const float NNUE_FT_LR_SCALE = 1.000f; //0.0039f;
+//
 static const float TDLEAF_K               = 400.0f; // sigmoid temperature (centipawns)
 static const int   TDLEAF_MIN_PLIES       = 8;      // skip games shorter than this
 // Per-update clamp: a single game's gradient update is limited to at most this
 // fraction of the weight's current magnitude (min ref = 1.0 so near-zero weights
-// can still move).  Set to 1.0 to disable.
-static const float TDLEAF_MAX_UPDATE_FRAC = 0.10f;  // max 10% change per update
+// can still move).  Set to 1.0 to disable.  Applied to both FC and FT layers.
+static const float TDLEAF_MAX_UPDATE_FRAC = 1.0f; //0.10f;  // max 10% change per update
 
 // ---------------------------------------------------------------------------
 // Per-ply record: accumulator snapshot + search score
@@ -41,6 +50,10 @@ struct TDRecord {
     int     score_stm;                 // search score (centipawns, side-to-move POV)
     int     stack;                     // layer stack index used (piece_count-1)/4
     bool    wtm;                       // White to move at this position
+    // Active feature indices at the leaf position (indexed by actual perspective 0=BLACK,1=WHITE).
+    // Used for FT and PSQT gradient backprop.
+    int     ft_idx[2][NNUE_MAX_FT_PER_PERSP];
+    int8_t  n_ft[2];
 };
 
 // ---------------------------------------------------------------------------

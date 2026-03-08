@@ -894,6 +894,69 @@ static float grad_l1_b[NNUE_LAYER_STACKS][NNUE_L1_SIZE];
 static float grad_l2_w[NNUE_LAYER_STACKS][NNUE_L2_PADDED];
 static float grad_l2_b[NNUE_LAYER_STACKS];
 
+// FT/PSQT float shadow arrays (heap — OS lazy-paged, physical use ∝ active features)
+// ft_weights_f32 / grad_ft_w: [FT_INPUTS × HALF_DIMS]  ~92 MB each
+// psqt_weights_f32 / grad_psqt_w: [FT_INPUTS × PSQT_BKTS] ~720 KB each
+// ft_dirty: [FT_INPUTS] — which feature rows received gradient this game
+static float    *ft_weights_f32   = nullptr;
+static float    *psqt_weights_f32 = nullptr;
+static uint32_t *ft_weights_cnt   = nullptr;  // update count per FT weight
+static uint32_t *psqt_weights_cnt = nullptr;  // update count per PSQT weight
+static float    *grad_ft_w        = nullptr;  // FT weight gradients
+static float    *grad_psqt_w      = nullptr;  // PSQT weight gradients
+static bool     *ft_dirty         = nullptr;  // which feature rows are non-zero
+
+// ---------------------------------------------------------------------------
+// nnue_init_zero_weights — fresh-start: zero FC/FT, PSQT = 100 cp/piece
+// ---------------------------------------------------------------------------
+void nnue_init_zero_weights()
+{
+    // ---- FC layers: all weights and biases to zero ----
+    for (int s = 0; s < NNUE_LAYER_STACKS; s++) {
+        memset(l0_weights_f32[s], 0, sizeof(l0_weights_f32[s]));
+        memset(l0_biases_f32[s],  0, sizeof(l0_biases_f32[s]));
+        memset(l1_weights_f32[s], 0, sizeof(l1_weights_f32[s]));
+        memset(l1_biases_f32[s],  0, sizeof(l1_biases_f32[s]));
+        memset(l2_weights_f32[s], 0, sizeof(l2_weights_f32[s]));
+        l2_bias_f32[s] = 0.0f;
+    }
+    memset(l0_weights_cnt, 0, sizeof(l0_weights_cnt));
+    memset(l0_biases_cnt,  0, sizeof(l0_biases_cnt));
+    memset(l1_weights_cnt, 0, sizeof(l1_weights_cnt));
+    memset(l1_biases_cnt,  0, sizeof(l1_biases_cnt));
+    memset(l2_weights_cnt, 0, sizeof(l2_weights_cnt));
+    memset(l2_bias_cnt,    0, sizeof(l2_bias_cnt));
+    memset(grad_l0_w, 0, sizeof(grad_l0_w));
+    memset(grad_l0_b, 0, sizeof(grad_l0_b));
+    memset(grad_l1_w, 0, sizeof(grad_l1_w));
+    memset(grad_l1_b, 0, sizeof(grad_l1_b));
+    memset(grad_l2_w, 0, sizeof(grad_l2_w));
+    memset(grad_l2_b, 0, sizeof(grad_l2_b));
+
+    // ---- FT biases: zero (int16 array, no float shadow) ----
+    if (ft_biases)
+        memset(ft_biases, 0, NNUE_HALF_DIMS * sizeof(int16_t));
+
+    // ---- FT weights: zero; PSQT: 100 cp/piece equivalent ----
+    // score_cp = psqt_diff/2 * 100/5776  →  psqt_w = 100*2*5776/100 = 11552
+    static const float PSQT_100CP = 11552.0f;
+    if (ft_weights_f32) {
+        size_t ft_sz   = (size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS;
+        size_t psqt_sz = (size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS;
+        memset(ft_weights_f32, 0, ft_sz * sizeof(float));
+        for (size_t i = 0; i < psqt_sz; i++) psqt_weights_f32[i] = PSQT_100CP;
+        memset(ft_weights_cnt,   0, ft_sz   * sizeof(uint32_t));
+        memset(psqt_weights_cnt, 0, psqt_sz * sizeof(uint32_t));
+        memset(grad_ft_w,        0, ft_sz   * sizeof(float));
+        memset(grad_psqt_w,      0, psqt_sz * sizeof(float));
+        memset(ft_dirty,         0, NNUE_FT_INPUTS * sizeof(bool));
+    }
+
+    // Sync all int8/int16/int32 inference arrays from the zeroed float shadows.
+    nnue_requantize_fc();
+    printf("NNUE TDLeaf: initialised FC/FT=0, PSQT=100 cp/piece (11552 int32 per feature)\n");
+}
+
 // ---------------------------------------------------------------------------
 // nnue_init_fp32_weights — dequantize int8 → float after nnue_load()
 // ---------------------------------------------------------------------------
@@ -942,7 +1005,29 @@ void nnue_init_fp32_weights()
     memset(grad_l1_b, 0, sizeof(grad_l1_b));
     memset(grad_l2_w, 0, sizeof(grad_l2_w));
     memset(grad_l2_b, 0, sizeof(grad_l2_b));
-    printf("NNUE TDLeaf: FP32 weights initialised (%d stacks)\n", NNUE_LAYER_STACKS);
+
+    // FT/PSQT float shadows — heap allocated; OS lazy-pages them.
+    size_t ft_sz   = (size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS;
+    size_t psqt_sz = (size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS;
+    if (!ft_weights_f32) {
+        ft_weights_f32   = new float   [ft_sz];
+        psqt_weights_f32 = new float   [psqt_sz];
+        ft_weights_cnt   = new uint32_t[ft_sz];
+        psqt_weights_cnt = new uint32_t[psqt_sz];
+        grad_ft_w        = new float   [ft_sz];
+        grad_psqt_w      = new float   [psqt_sz];
+        ft_dirty         = new bool    [NNUE_FT_INPUTS];
+    }
+    // Initialize float shadows from the loaded int16/int32 arrays.
+    for (size_t i = 0; i < ft_sz;   i++) ft_weights_f32[i]   = (float)ft_weights[i];
+    for (size_t i = 0; i < psqt_sz; i++) psqt_weights_f32[i] = (float)psqt_weights[i];
+    memset(ft_weights_cnt,   0, ft_sz   * sizeof(uint32_t));
+    memset(psqt_weights_cnt, 0, psqt_sz * sizeof(uint32_t));
+    memset(grad_ft_w,        0, ft_sz   * sizeof(float));
+    memset(grad_psqt_w,      0, psqt_sz * sizeof(float));
+    memset(ft_dirty,         0, NNUE_FT_INPUTS * sizeof(bool));
+
+    printf("NNUE TDLeaf: FP32 weights initialised (%d stacks + FT/PSQT)\n", NNUE_LAYER_STACKS);
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,6 +1108,9 @@ void nnue_forward_fp32(const int16_t acc[2][NNUE_HALF_DIMS],
     act.fwdOut    = act.fc0_raw[NNUE_L0_DIRECT] * (9600.0f / 8128.0f);
     act.positional = act.fc2_raw + act.fwdOut;
 
+    // Record STM perspective for FT/PSQT backprop (WHITE=1, BLACK=0).
+    act.stm_persp = (int8_t)stm;
+
     // PSQT diff is not included in activations (it is constant w.r.t. FC weights)
     (void)psqt;
 }
@@ -1088,12 +1176,69 @@ void nnue_accumulate_gradients(const NNUEActivations &act, float grad_scale)
     // Passthrough output[15]: ∂fwdOut/∂fc0_raw[15] = 9600/8128
     g_fc0_raw[NNUE_L0_DIRECT] += g_pos * (9600.0f / 8128.0f);
 
-    // 2. FC0 backward (stop here — not training FT)
+    // 2. FC0 backward — weights and biases
     for (int o = 0; o < NNUE_L0_SIZE; o++) {
         if (g_fc0_raw[o] == 0.0f) continue;
         for (int i = 0; i < NNUE_L0_INPUT; i++)
             grad_l0_w[s][o * NNUE_L0_INPUT + i] += g_fc0_raw[o] * act.l0_in[i];
         grad_l0_b[s][o] += g_fc0_raw[o];
+    }
+
+    // 1. Continue backward: FC0 inputs → accumulator → FT/PSQT weights
+    // g_l0_in[i] = Σ_o g_fc0_raw[o] × l0_weights_f32[s][o×L0_INPUT+i]
+    float g_l0_in[NNUE_L0_INPUT] = {};
+    for (int o = 0; o < NNUE_L0_SIZE; o++) {
+        if (g_fc0_raw[o] == 0.0f) continue;
+        const float *w = &l0_weights_f32[s][o * NNUE_L0_INPUT];
+        for (int i = 0; i < NNUE_L0_INPUT; i++)
+            g_l0_in[i] += g_fc0_raw[o] * w[i];
+    }
+
+    // SqrCReLU backward:
+    //   l0_in[p*512+j] = clamp(a[j],0,127) * clamp(a[j+512],0,127) / 128
+    //   g_acc[persp][j]     += g_l0_in[p*512+j] * clamp(a[j+512],0,127) / 128  (if a[j]>0)
+    //   g_acc[persp][j+512] += g_l0_in[p*512+j] * clamp(a[j],    0,127) / 128  (if a[j+512]>0)
+    // l0_in layout: [stm_512 | opp_512]  where p=0 is stm, p=1 is opp.
+    float g_acc[2][NNUE_HALF_DIMS] = {};
+    int stm_p = (int)act.stm_persp;
+    for (int p = 0; p < 2; p++) {
+        int persp       = (p == 0) ? stm_p : (stm_p ^ 1);
+        const float *gi = g_l0_in + p * 512;
+        const int16_t *a = act.acc_raw[persp];
+        float *g_a       = g_acc[persp];
+        for (int j = 0; j < 512; j++) {
+            float vlo = (float)a[j];
+            float vhi = (float)a[j + 512];
+            float clo = (vlo < 0.0f) ? 0.0f : (vlo > 127.0f) ? 127.0f : vlo;
+            float chi = (vhi < 0.0f) ? 0.0f : (vhi > 127.0f) ? 127.0f : vhi;
+            float g   = gi[j] * (1.0f / 128.0f);
+            if (clo > 0.0f) g_a[j]       += g * chi;
+            if (chi > 0.0f) g_a[j + 512] += g * clo;
+        }
+    }
+
+    // FT weight gradient: for each active feature fi in perspective p:
+    //   grad_ft_w[fi × HALF_DIMS + d] += NNUE_FT_LR_SCALE × g_acc[p][d]
+    // PSQT gradient (only bucket `stack` is used by this position):
+    //   psqt_diff = psqt[stm][stack] - psqt[opp][stack]
+    //   ∂score_cp/∂psqt_diff = cp_factor/2 (half of the cp_factor used for positional)
+    //   g_psqt_diff = grad_scale × 0.5  (grad_scale already includes cp_factor for positional)
+    //   grad_psqt_w[fi × PSQT_BKTS + stack] += NNUE_FT_LR_SCALE × g_psqt_diff × (+1 for stm, -1 for opp)
+    float g_psqt_diff = grad_scale * 0.5f;
+    for (int p = 0; p < 2; p++) {
+        int persp       = (p == 0) ? stm_p : (stm_p ^ 1);
+        float psqt_sign = (persp == stm_p) ? 1.0f : -1.0f;
+        float *g_a      = g_acc[persp];
+        for (int k = 0; k < (int)act.n_ft[persp]; k++) {
+            int fi = act.ft_idx[persp][k];
+            if (fi < 0 || fi >= NNUE_FT_INPUTS) continue;
+            ft_dirty[fi] = true;
+            float *gfw = grad_ft_w + (size_t)fi * NNUE_HALF_DIMS;
+            for (int d = 0; d < NNUE_HALF_DIMS; d++)
+                gfw[d] += NNUE_FT_LR_SCALE * g_a[d];
+            grad_psqt_w[fi * NNUE_PSQT_BKTS + s] +=
+                NNUE_FT_LR_SCALE * g_psqt_diff * psqt_sign;
+        }
     }
 }
 
@@ -1156,6 +1301,36 @@ void nnue_apply_gradients()
     memset(grad_l1_b, 0, sizeof(grad_l1_b));
     memset(grad_l2_w, 0, sizeof(grad_l2_w));
     memset(grad_l2_b, 0, sizeof(grad_l2_b));
+
+    // FT/PSQT: only iterate over dirty feature rows (sparse update).
+    if (ft_dirty) {
+        for (int fi = 0; fi < NNUE_FT_INPUTS; fi++) {
+            if (!ft_dirty[fi]) continue;
+            // FT weights
+            float *fw = ft_weights_f32 + (size_t)fi * NNUE_HALF_DIMS;
+            float *gw = grad_ft_w      + (size_t)fi * NNUE_HALF_DIMS;
+            uint32_t *cnt = ft_weights_cnt + (size_t)fi * NNUE_HALF_DIMS;
+            for (int d = 0; d < NNUE_HALF_DIMS; d++) {
+                if (gw[d] != 0.0f) {
+                    fw[d] -= clamp_grad(fw[d], gw[d]);
+                    cnt[d]++;
+                    gw[d] = 0.0f;
+                }
+            }
+            // PSQT weights
+            float *pw  = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
+            float *gpw = grad_psqt_w      + (size_t)fi * NNUE_PSQT_BKTS;
+            uint32_t *pcnt = psqt_weights_cnt + (size_t)fi * NNUE_PSQT_BKTS;
+            for (int b = 0; b < NNUE_PSQT_BKTS; b++) {
+                if (gpw[b] != 0.0f) {
+                    pw[b] -= clamp_grad(pw[b], gpw[b]);
+                    pcnt[b]++;
+                    gpw[b] = 0.0f;
+                }
+            }
+            ft_dirty[fi] = false;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,6 +1377,25 @@ void nnue_requantize_fc()
             out_weights[s][i] = (int8_t)q;
         }
     }
+    // FT/PSQT weights: round float → int16/int32.
+    // ft_weights_f32 tracks raw int16 scale (same units as ft_weights).
+    if (ft_weights_f32) {
+        for (int fi = 0; fi < NNUE_FT_INPUTS; fi++) {
+            const float *fw = ft_weights_f32 + (size_t)fi * NNUE_HALF_DIMS;
+            int16_t     *iw = ft_weights      + (size_t)fi * NNUE_HALF_DIMS;
+            for (int d = 0; d < NNUE_HALF_DIMS; d++) {
+                int v = (int)roundf(fw[d]);
+                if (v < -32767) v = -32767;
+                if (v >  32767) v =  32767;
+                iw[d] = (int16_t)v;
+            }
+            const float *pw = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
+            int32_t     *ip = psqt_weights      + (size_t)fi * NNUE_PSQT_BKTS;
+            for (int b = 0; b < NNUE_PSQT_BKTS; b++)
+                ip[b] = (int32_t)roundf(pw[b]);
+        }
+    }
+
     // Clear score hash — cached evaluations are now stale.
     if (score_table && SCORE_SIZE > 0)
         memset(score_table, 0, SCORE_SIZE * sizeof(score_rec));
@@ -1210,9 +1404,9 @@ void nnue_requantize_fc()
 // ---------------------------------------------------------------------------
 // nnue_save_fc_weights / nnue_load_fc_weights — companion .tdleaf.bin file
 //
-// Version 2 layout (current):
-//   magic(4) + version(4) + 8 stacks × per-stack block
-//   Per-stack block:
+// Version 3 layout (current):
+//   magic(4) + version(4)
+//   8 stacks × FC block (same as v2):
 //     FC0 biases:  float32[L0_SIZE]            × TDLEAF_SCALE  (64 B)
 //                  uint32_t counts[L0_SIZE]                     (64 B)
 //     FC0 weights: float32[L0_SIZE*L0_INPUT]   × TDLEAF_SCALE  (65536 B, natural layout)
@@ -1225,18 +1419,24 @@ void nnue_requantize_fc()
 //                  uint32_t count[1]                            (4 B)
 //     FC2 weights: float32[L2_PADDED]          × TDLEAF_SCALE  (128 B)
 //                  uint32_t counts[L2_PADDED]                   (128 B)
-//   Total: 8 + 8 × 139,912 = 1,119,304 bytes
+//   Sparse FT/PSQT section (new in v3):
+//     n_ft_rows(4): number of feature rows with any update history
+//     For each dirty row (8,260 bytes each):
+//       fi(4): feature index in [0, FT_INPUTS)
+//       float32[HALF_DIMS] × TDLEAF_SCALE: FT weights           (4096 B)
+//       uint32_t[HALF_DIMS]: FT update counts                    (4096 B)
+//       float32[PSQT_BKTS] × TDLEAF_SCALE: PSQT weights         (32 B)
+//       uint32_t[PSQT_BKTS]: PSQT update counts                  (32 B)
 //
-// TDLEAF_SCALE = 128: in-memory w_f32 is at 1× int8 scale; the file stores w×128
-// so that sub-0.5 fractional drifts are preserved across sessions.  When loading,
-// divide by TDLEAF_SCALE to restore w_f32 exactly.  nnue_requantize_fc then derives
-// the int8 inference values via round(w_f32).
+// TDLEAF_SCALE = 128: stores w_f32 × 128 so sub-integer drift survives sessions.
+// On load, divide by TDLEAF_SCALE to restore w_f32 exactly.
 //
+// Version 2 (legacy): FC block only, no FT/PSQT section.  Still readable.
 // Version 1 (legacy): int32 biases + int8 weights, no counts.  Still readable.
 // ---------------------------------------------------------------------------
 static const float    TDLEAF_SCALE   = 128.0f;
 static const uint32_t TDLEAF_MAGIC   = 0x544D4C46u; // "TMLF"
-static const uint32_t TDLEAF_VERSION = 2u;
+static const uint32_t TDLEAF_VERSION = 3u;
 
 bool nnue_save_fc_weights(const char *path)
 {
@@ -1279,6 +1479,49 @@ bool nnue_save_fc_weights(const char *path)
         }
         fwrite(l2_weights_cnt[s], sizeof(uint32_t), NNUE_L2_PADDED, f);
     }
+
+    // Sparse FT/PSQT section (v3).
+    // A feature row is "dirty" if any ft or psqt update count is non-zero.
+    uint32_t n_ft_rows = 0;
+    if (ft_weights_f32) {
+        for (int fi = 0; fi < NNUE_FT_INPUTS; fi++) {
+            const uint32_t *wc = ft_weights_cnt   + (size_t)fi * NNUE_HALF_DIMS;
+            const uint32_t *pc = psqt_weights_cnt + (size_t)fi * NNUE_PSQT_BKTS;
+            bool dirty = false;
+            for (int d = 0; d < NNUE_HALF_DIMS && !dirty; d++) dirty = (wc[d] != 0);
+            for (int b = 0; b < NNUE_PSQT_BKTS && !dirty; b++) dirty = (pc[b] != 0);
+            if (dirty) n_ft_rows++;
+        }
+    }
+    fwrite(&n_ft_rows, sizeof(uint32_t), 1, f);
+
+    if (ft_weights_f32) {
+        float tmp_w[NNUE_HALF_DIMS];
+        float tmp_p[NNUE_PSQT_BKTS];
+        for (int fi = 0; fi < NNUE_FT_INPUTS; fi++) {
+            const uint32_t *wc = ft_weights_cnt   + (size_t)fi * NNUE_HALF_DIMS;
+            const uint32_t *pc = psqt_weights_cnt + (size_t)fi * NNUE_PSQT_BKTS;
+            bool dirty = false;
+            for (int d = 0; d < NNUE_HALF_DIMS && !dirty; d++) dirty = (wc[d] != 0);
+            for (int b = 0; b < NNUE_PSQT_BKTS && !dirty; b++) dirty = (pc[b] != 0);
+            if (!dirty) continue;
+
+            uint32_t fi_u = (uint32_t)fi;
+            fwrite(&fi_u, sizeof(uint32_t), 1, f);
+
+            const float *fw = ft_weights_f32   + (size_t)fi * NNUE_HALF_DIMS;
+            const float *pw = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
+
+            for (int d = 0; d < NNUE_HALF_DIMS;  d++) tmp_w[d] = fw[d] * TDLEAF_SCALE;
+            fwrite(tmp_w, sizeof(float),    NNUE_HALF_DIMS,  f);
+            fwrite(wc,    sizeof(uint32_t), NNUE_HALF_DIMS,  f);
+
+            for (int b = 0; b < NNUE_PSQT_BKTS; b++) tmp_p[b] = pw[b] * TDLEAF_SCALE;
+            fwrite(tmp_p, sizeof(float),    NNUE_PSQT_BKTS,  f);
+            fwrite(pc,    sizeof(uint32_t), NNUE_PSQT_BKTS,  f);
+        }
+    }
+
     fclose(f);
     return true;
 }
@@ -1318,23 +1561,21 @@ bool nnue_load_fc_weights(const char *path)
         return true;
     }
 
-    // ---- Version 2: float32 × TDLEAF_SCALE + uint32 counts ----
-    if (version != TDLEAF_VERSION) {
+    // ---- Version 2 / 3: float32 × TDLEAF_SCALE + uint32 counts ----
+    if (version != 2u && version != TDLEAF_VERSION) {
         fprintf(stderr, "TDLeaf: unsupported version %u in %s\n", version, path);
         fclose(f); return false;
     }
     bool ok = true;
     for (int s = 0; s < NNUE_LAYER_STACKS && ok; s++) {
-        // Helper: read N float32 values, divide by TDLEAF_SCALE, store into dst.
         auto rf = [&](float *dst, int n) -> bool {
+            float tmp;
             for (int i = 0; i < n; i++) {
-                float v;
-                if (fread(&v, sizeof(float), 1, f) != 1) return false;
-                dst[i] = v / TDLEAF_SCALE;
+                if (fread(&tmp, sizeof(float), 1, f) != 1) return false;
+                dst[i] = tmp / TDLEAF_SCALE;
             }
             return true;
         };
-        // Helper: read N uint32 values into dst.
         auto ru = [&](uint32_t *dst, int n) -> bool {
             return fread(dst, sizeof(uint32_t), n, f) == (size_t)n;
         };
@@ -1351,12 +1592,45 @@ bool nnue_load_fc_weights(const char *path)
              rf(l2_weights_f32[s], NNUE_L2_PADDED)                &&
              ru(l2_weights_cnt[s], NNUE_L2_PADDED);
     }
+
+    // Sparse FT/PSQT section (v3 only).
+    int n_ft_loaded = 0;
+    if (ok && version == TDLEAF_VERSION && ft_weights_f32) {
+        uint32_t n_ft_rows = 0;
+        if (fread(&n_ft_rows, sizeof(uint32_t), 1, f) != 1) { ok = false; }
+        float tmp_w[NNUE_HALF_DIMS];
+        float tmp_p[NNUE_PSQT_BKTS];
+        for (uint32_t k = 0; k < n_ft_rows && ok; k++) {
+            uint32_t fi;
+            if (fread(&fi, sizeof(uint32_t), 1, f) != 1 || fi >= (uint32_t)NNUE_FT_INPUTS)
+                { ok = false; break; }
+
+            float    *fw = ft_weights_f32   + (size_t)fi * NNUE_HALF_DIMS;
+            uint32_t *wc = ft_weights_cnt   + (size_t)fi * NNUE_HALF_DIMS;
+            float    *pw = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
+            uint32_t *pc = psqt_weights_cnt + (size_t)fi * NNUE_PSQT_BKTS;
+
+            if (fread(tmp_w, sizeof(float), NNUE_HALF_DIMS, f) != (size_t)NNUE_HALF_DIMS)
+                { ok = false; break; }
+            for (int d = 0; d < NNUE_HALF_DIMS; d++) fw[d] = tmp_w[d] / TDLEAF_SCALE;
+            if (fread(wc, sizeof(uint32_t), NNUE_HALF_DIMS, f) != (size_t)NNUE_HALF_DIMS)
+                { ok = false; break; }
+
+            if (fread(tmp_p, sizeof(float), NNUE_PSQT_BKTS, f) != (size_t)NNUE_PSQT_BKTS)
+                { ok = false; break; }
+            for (int b = 0; b < NNUE_PSQT_BKTS; b++) pw[b] = tmp_p[b] / TDLEAF_SCALE;
+            if (fread(pc, sizeof(uint32_t), NNUE_PSQT_BKTS, f) != (size_t)NNUE_PSQT_BKTS)
+                { ok = false; break; }
+
+            n_ft_loaded++;
+        }
+    }
+
     fclose(f);
     if (!ok) {
         fprintf(stderr, "TDLeaf: read error in %s\n", path);
         return false;
     }
-    // Zero gradient accumulators; requantize fp32 → int8 for inference.
     memset(grad_l0_w, 0, sizeof(grad_l0_w));
     memset(grad_l0_b, 0, sizeof(grad_l0_b));
     memset(grad_l1_w, 0, sizeof(grad_l1_w));
@@ -1364,7 +1638,10 @@ bool nnue_load_fc_weights(const char *path)
     memset(grad_l2_w, 0, sizeof(grad_l2_w));
     memset(grad_l2_b, 0, sizeof(grad_l2_b));
     nnue_requantize_fc();
-    printf("TDLeaf: loaded v2 FC weights from %s\n", path);
+    if (version == TDLEAF_VERSION)
+        printf("TDLeaf: loaded v3 weights from %s (%d FT rows)\n", path, n_ft_loaded);
+    else
+        printf("TDLeaf: loaded v2 FC weights from %s (will upgrade to v3 on next save)\n", path);
     return true;
 }
 

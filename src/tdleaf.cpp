@@ -42,9 +42,7 @@ void tdleaf_record_ply(TDGameRecord &rec,
     }
     // acc_a now holds the fully computed leaf accumulator; cur is the leaf position.
 
-    // Leaf score from leaf STM perspective: negate once per ply walked.
-    int leaf_score_stm = (pv_len & 1) ? -score_root_stm : score_root_stm;
-    bool leaf_wtm      = root_wtm ^ (bool)(pv_len & 1);
+    bool leaf_wtm = root_wtm ^ (bool)(pv_len & 1);
 
     // Leaf piece count for stack selection.
     int pc = 2;  // kings
@@ -52,6 +50,23 @@ void tdleaf_record_ply(TDGameRecord &rec,
         for (int pt = PAWN; pt <= QUEEN; pt++)
             pc += cur.plist[sd][pt][0];
     pc = (pc < 1) ? 1 : (pc > 32) ? 32 : pc;
+
+    // Use the NNUE static evaluation of the leaf position directly.
+    // This ensures d[t] is computed from what nnue_forward_fp32 actually produces
+    // at that position, making the gradient self-consistent.
+    // (The propagated search score includes quiescence and may differ.)
+    int leaf_score_stm = nnue_evaluate(acc_a, (int)leaf_wtm, pc);
+
+#if TDLEAF_CHECK_SCORE
+    {
+        // Sanity check: propagated root score (with per-ply sign flip) vs direct eval.
+        int propagated = (pv_len & 1) ? -score_root_stm : score_root_stm;
+        int diff = leaf_score_stm - propagated;
+        fprintf(stderr, "TDLeaf check: pv_len=%d  leaf_wtm=%d  direct=%d  propagated=%d  diff=%d%s\n",
+                pv_len, (int)leaf_wtm, leaf_score_stm, propagated, diff,
+                (diff < -300 || diff > 300) ? "  *** LARGE ***" : "");
+    }
+#endif
 
     TDRecord &r = rec.plies[rec.n_plies++];
     memcpy(r.acc[0],  acc_a.acc[0],  NNUE_HALF_DIMS  * sizeof(int16_t));
@@ -61,6 +76,21 @@ void tdleaf_record_ply(TDGameRecord &rec,
     r.score_stm = leaf_score_stm;
     r.wtm       = leaf_wtm;
     r.stack     = (pc - 1) / 4;
+
+    // Enumerate active features at the leaf position for FT/PSQT backprop.
+    // Indices are by actual perspective (0=BLACK, 1=WHITE) matching halfkav2_feature().
+    for (int p = 0; p < 2; p++) {
+        int ksq = cur.plist[p][KING][1];
+        r.n_ft[p] = 0;
+        for (int sd = 0; sd < 2; sd++)
+            for (int pt = PAWN; pt <= KING; pt++)
+                for (int i = 1; i <= cur.plist[sd][pt][0]; i++) {
+                    if (r.n_ft[p] >= NNUE_MAX_FT_PER_PERSP) goto ft_done;
+                    int fi = halfkav2_feature(p, ksq, cur.plist[sd][pt][i], pt, sd);
+                    if (fi >= 0) r.ft_idx[p][r.n_ft[p]++] = fi;
+                }
+        ft_done:;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +147,14 @@ void tdleaf_update_after_game(TDGameRecord &rec, float result, const char *save_
         act.stack = rec.plies[t].stack;
         nnue_forward_fp32(rec.plies[t].acc, rec.plies[t].psqt,
                           rec.plies[t].wtm, act);
+        // Fill FT/PSQT backprop fields before calling accumulate_gradients.
+        memcpy(act.acc_raw[0], rec.plies[t].acc[0], NNUE_HALF_DIMS * sizeof(int16_t));
+        memcpy(act.acc_raw[1], rec.plies[t].acc[1], NNUE_HALF_DIMS * sizeof(int16_t));
+        act.n_ft[0] = rec.plies[t].n_ft[0];
+        act.n_ft[1] = rec.plies[t].n_ft[1];
+        memcpy(act.ft_idx[0], rec.plies[t].ft_idx[0], rec.plies[t].n_ft[0] * sizeof(int));
+        memcpy(act.ft_idx[1], rec.plies[t].ft_idx[1], rec.plies[t].n_ft[1] * sizeof(int));
+        // stm_persp is set inside nnue_forward_fp32 above.
         nnue_accumulate_gradients(act, grad_scale);
     }
 
