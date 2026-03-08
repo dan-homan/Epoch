@@ -220,6 +220,22 @@ Self-play matches at 1 min + 0.1 s/move, 100 games each:
 
 ---
 
+## TDLeaf(λ) Online Training
+
+All NNUE layers (FC0/FC1/FC2, FT, PSQT) can be trained via TDLeaf(λ) self-play.
+See `src/TDLEAF_PLAN.md` for the full reference.  Build with `NNUE=1 TDLEAF=1`.
+Key hyperparameters (in `src/tdleaf.h`):
+
+| Constant | Value | Notes |
+|----------|-------|-------|
+| `TDLEAF_ALPHA` | 200 | Learning rate for FC and FT layers |
+| `NNUE_FT_LR_SCALE` | 1.0 | FT accumulator LR multiplier (no extra scale needed) |
+| `NNUE_PSQT_LR_SCALE` | 1000 | PSQT LR multiplier (large: PSQT bypasses FC chain) |
+| `TDLEAF_LAMBDA` | 0.7 | Eligibility trace decay |
+| `TDLEAF_K` | 400 | Sigmoid temperature (cp) |
+
+---
+
 ## Remaining Work
 
 ### Search parameter tuning

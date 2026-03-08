@@ -41,7 +41,7 @@ e_t     = (d_{t+1} - d_t) + λ * e_{t+1}     for t = T-2 … 0
 
 where `∇_w d_t = d_t * (1 - d_t) / K * ∇_w score_t`.
 
-Defaults: `λ = 0.7`, `K = 400`, `TDLEAF_ALPHA = 20` (FC), `TDLEAF_ALPHA_FT = 0.008` (FT/PSQT).
+Defaults: `λ = 0.7`, `K = 400`, `TDLEAF_ALPHA = 200` (FC+FT), `NNUE_FT_LR_SCALE = 1.0` (FT accumulator), `NNUE_PSQT_LR_SCALE = 1000` (PSQT).
 
 **Key design choice:** `d_t` is computed from `nnue_evaluate()` (direct static eval of the
 PV leaf), not from the search score propagated from the root.  This ensures the sigmoid
@@ -73,7 +73,7 @@ the game; only dirty rows are scanned in `nnue_apply_gradients`.
 | `src/tdleaf.h` | Hyperparameters, `TDRecord`, `TDGameRecord`, function declarations |
 | `src/tdleaf.cpp` | PV walking, TD error computation, gradient backprop hooks |
 | `src/nnue.cpp` | FP32 shadow arrays, forward pass, gradient accumulation, weight save/load |
-| `src/nnue.h` | `NNUEActivations` struct, `NNUE_FT_LR_SCALE`, TDLeaf function declarations |
+| `src/nnue.h` | `NNUEActivations` struct, TDLeaf function declarations |
 
 ---
 
@@ -147,8 +147,19 @@ FC2 output (positional)
   → PSQT weight rows for each active feature index (sparse)
 ```
 
-`NNUE_FT_LR_SCALE = TDLEAF_ALPHA_FT / TDLEAF_ALPHA` scales down FT/PSQT gradients
-relative to FC.  Update both constants together if you change learning rates.
+**Learning rate scales** (defined in `src/tdleaf.h`):
+
+- `NNUE_FT_LR_SCALE` multiplies `g_acc[p][d]` before accumulating into `grad_ft_w`.
+  Value 1.0 means the same effective LR as FC (TDLEAF_ALPHA already in grad_scale).
+  The backward chain naturally amplifies the gradient to a useful magnitude for int16 weights.
+
+- `NNUE_PSQT_LR_SCALE` multiplies `grad_scale × 0.5` for the PSQT update.
+  Needs a large value (~1000) because PSQT bypasses the FC backward chain entirely —
+  `grad_scale = TDLEAF_ALPHA × e[t] × d(1−d)/K × cp_factor ≈ 2×10⁻⁴`, while PSQT
+  weights are at int32 scale (~5,776 per pawn).  Without the amplification, per-game
+  updates would be ~1/10,000 of a pawn.
+
+FT and PSQT learning rates are tuned independently.  Only change one at a time.
 
 ---
 
@@ -173,18 +184,37 @@ will be upgraded to version 3 on the next save.
 
 ## Initialization
 
-When no `.tdleaf.bin` is found, the pretrained Stockfish 15.1 FC weights (from the
-`.nnue` file) are used automatically.
+**Default (fine-tuning):** When no `.tdleaf.bin` is found, the pretrained Stockfish 15.1
+FC/FT/PSQT weights (from the `.nnue` file) are used automatically.  Training proceeds as
+gradient updates from the SF15.1 starting point.
 
-To start training from scratch with randomly-initialised FC/FT weights and PSQT = 100 cp/piece:
+**Training from scratch:** Use `--init-nnue --write-nnue <file>` to create a randomly
+initialised `.nnue` with no source file required:
 
 ```sh
-./EXchess_v... --init-nnue --write-nnue nn-fresh.nnue
+perl comp.pl init_nnue NNUE=1 TDLEAF=1
+./EXchess_vinit_nnue --init-nnue --write-nnue nn-fresh.nnue
 ```
 
-This calls `nnue_alloc_arrays()` + `nnue_init_fp32_weights()` + `nnue_init_zero_weights()`,
-writes the result to `nn-fresh.nnue`, and exits. No source `.nnue` file is needed.
-Build a training binary pointing at the written file: `perl comp.pl train NNUE=1 TDLEAF=1 NNUE_NET=nn-fresh.nnue`.
+This calls `nnue_alloc_arrays()` + `nnue_init_fp32_weights()` + `nnue_init_zero_weights()`
+(despite the name, `nnue_init_zero_weights` samples from N(μ,σ) measured from SF15.1):
+
+| Component | Distribution |
+|-----------|-------------|
+| FC0 weights | N(0.24, 8.43), clipped ±127 |
+| FC1 weights | N(−1.10, 18.30), clipped ±127 |
+| FC2 weights | N(1.10, 76.38), clipped ±127 |
+| FC0/1/2 biases | N(μ,σ) measured from SF15.1 |
+| FT weights (int16) | N(−0.71, 44.41) |
+| FT biases (int16) | N(3.34, 96.48) |
+| PSQT | Signed piece values: pawn ±5776, knight/bishop ±17328, rook ±28880, queen ±51984 |
+
+Then build training binaries pointing at the new file:
+
+```sh
+perl comp.pl train_fresh NNUE=1 NNUE_NET=nn-fresh.nnue TDLEAF=1
+perl comp.pl train_fresh_ro NNUE=1 NNUE_NET=nn-fresh.nnue TDLEAF=1 TDLEAF_READONLY=1
+```
 
 ---
 

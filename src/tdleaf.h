@@ -35,8 +35,8 @@ static const float NNUE_FT_LR_SCALE = 1.000f;
 // NOTE: grad_scale = TDLEAF_ALPHA × e[t] × d(1-d)/K × cp_factor.
 //   With K=400 and cp_factor=100/5776, |grad_scale| ≈ 2e-4 for typical errors.
 //   PSQT weights are at int32 scale (a pawn ≈ 5776 units), so a large multiplier
-//   is needed to get meaningful per-game updates.  Empirically ~10000 works well.
-static const float NNUE_PSQT_LR_SCALE = 10000.0f;
+//   is needed to get meaningful per-game updates.  
+static const float NNUE_PSQT_LR_SCALE = 1000.0f;
 //
 static const float TDLEAF_K               = 400.0f; // sigmoid temperature (centipawns)
 static const int   TDLEAF_MIN_PLIES       = 8;      // skip games shorter than this
