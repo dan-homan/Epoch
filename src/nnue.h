@@ -78,6 +78,10 @@ struct NNUEAccumulator {
 // ---------------------------------------------------------------------------
 extern bool nnue_available;
 
+// Allocate FT heap arrays and set nnue_available=true without loading a file.
+// Used by --init-nnue mode; also called internally by nnue_load().
+void nnue_alloc_arrays();
+
 // Load a HalfKAv2_hm .nnue file. Returns true on success.
 bool nnue_load(const char *path);
 

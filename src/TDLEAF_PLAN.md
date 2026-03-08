@@ -176,13 +176,15 @@ will be upgraded to version 3 on the next save.
 When no `.tdleaf.bin` is found, the pretrained Stockfish 15.1 FC weights (from the
 `.nnue` file) are used automatically.
 
-To start training from scratch with zeroed FC/FT weights and PSQT = 100 cp/piece:
+To start training from scratch with randomly-initialised FC/FT weights and PSQT = 100 cp/piece:
 
 ```sh
-./EXchess_v... --init-tdleaf-zero
+./EXchess_v... --init-nnue --write-nnue nn-fresh.nnue
 ```
 
-This calls `nnue_init_zero_weights()` and saves the resulting `.tdleaf.bin` immediately.
+This calls `nnue_alloc_arrays()` + `nnue_init_fp32_weights()` + `nnue_init_zero_weights()`,
+writes the result to `nn-fresh.nnue`, and exits. No source `.nnue` file is needed.
+Build a training binary pointing at the written file: `perl comp.pl train NNUE=1 TDLEAF=1 NNUE_NET=nn-fresh.nnue`.
 
 ---
 

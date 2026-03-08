@@ -1,32 +1,23 @@
-# First create two versions of the executable for training from zero
+# Step 1: create a fresh randomly-initialised .nnue (no source .nnue needed)
+#   --init-nnue  creates FC/FT/PSQT from N(mean,std) measured from SF15.1
+#   --write-nnue writes the result (required with --init-nnue)
+perl comp.pl init_nnue NNUE=1 TDLEAF=1
+./EXchess_vinit_nnue --init-nnue --write-nnue nn-zeroed.nnue
+
+# Step 2: build two training versions pointing to the new net
 perl comp.pl train_zeroed NNUE=1 NNUE_NET=nn-zeroed.nnue TDLEAF=1
 perl comp.pl train_zeroed_ro NNUE=1 NNUE_NET=nn-zeroed.nnue TDLEAF=1 TDLEAF_READONLY=1
 
-# Second, created a zeroed net to start from and for later comparison
-./EXchess_vtrain_zeroed --init-tdleaf-zero --write-nnue nn-trained.nnue 
-
---> above command failed because there is no nn-zeroed.nnue yet, which the executable expected to find
-
-./EXchess_v2026_03_08a --init-tdleaf-zero --write-nnue nn-zeroed.nnue 
-NNUE: version=0x7AF32F20  hash=0x1C102EF2  desc_size=75
-NNUE: architecture: Network trained with the https://github.com/glinscott/nnue-pytorch trainer.
-NNUE: ft_hash=0x7F2344B8
-NNUE: reading FT biases [1024 int16] ...
-NNUE: reading FT weights [23068672 int16] ...
-NNUE: reading PSQT weights [180224 int32] ...
-NNUE: FT + PSQT loaded OK
-NNUE: reading 8 layer stacks ...
-NNUE: all 8 stacks loaded OK
-NNUE TDLeaf: FP32 weights initialised (8 stacks + FT/PSQT)
-TDLeaf: initializing from zero (FC/FT=0, PSQT=100cp/piece).
-NNUE: backed up './nn-ad9b42354671.tdleaf.bin' -> './nn-ad9b42354671.tdleaf.bin.bak'
-NNUE TDLeaf: initialised FC/FT=0, PSQT=100 cp/piece (11552 int32 per feature)
-NNUE: wrote nn-zeroed.nnue
+# Third, create a version to test the zeroed nune file..
+perl comp.pl test_zeroed NNUE=1 NNUE_NET=nn-zeroed.nnue
 
 # Third, start training
 #
 # NOTE: we are playing each version against itself, including the trained weights to that point 
-#  (each new game loads the update training), but only one version is learning in each game
-#  Therefore we should expect scores close to 50% even though play (hopefully) is improving
+#  Each new game in the set updates the train_zeroed but not train_zeroed_ro version.
 #
 python3 tdleaf_selfplay.py EXchess_vtrain_zeroed -n 5000 --depth 6 --engine2 EXchess_vtrain_zeroed_ro --depth2 6 --move-timeout 10 
+
+# Four, examine the learning compared to the original
+python3 compare_fc_weights.py nn-zeroed.nnue nn-zeroed.tdleaf.bin --ft-weights 
+

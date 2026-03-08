@@ -149,43 +149,49 @@ int main(int argc, char *argv[])
 
 #if NNUE
   {
-    char nnue_path[FILENAME_MAX];
-    // Stockfish 17 SFNNv9 default net (HalfKAv2_hm, ~45 MB compressed)
-    // Download from: https://github.com/official-stockfish/networks
-    // Try exec directory first, then current directory
-    snprintf(nnue_path, sizeof(nnue_path), "%s%s", exec_path, NNUE_NET);
-    if (!nnue_load(nnue_path)) {
-      nnue_load(NNUE_NET);
-    }
-    if (nnue_available) write_out("NNUE evaluation loaded.\n");
-    else                write_out("NNUE file not found, using classical evaluation.\n");
+    // --init-nnue: create a fresh random-initialised .nnue without reading an existing one.
+    // Requires --write-nnue <filename>; writes the file and exits.
+    bool init_nnue_mode = false;
+    for (int ai = 1; ai < argc; ai++)
+      if (strcmp(argv[ai], "--init-nnue") == 0) { init_nnue_mode = true; break; }
+
+    if (init_nnue_mode) {
+      // Verify --write-nnue is also present.
+      bool has_write = false;
+      for (int ai = 1; ai < argc - 1; ai++)
+        if (strcmp(argv[ai], "--write-nnue") == 0) { has_write = true; break; }
+      if (!has_write) {
+        fprintf(stderr, "--init-nnue requires --write-nnue <filename>\n");
+        return 1;
+      }
+      // Allocate arrays, init float shadows, then fill with random distributions.
+      nnue_alloc_arrays();
+      nnue_init_fp32_weights();
+      nnue_init_zero_weights();
+      // Fall through to the --write-nnue handler below, which will write and exit.
+    } else {
+      char nnue_path[FILENAME_MAX];
+      snprintf(nnue_path, sizeof(nnue_path), "%s%s", exec_path, NNUE_NET);
+      if (!nnue_load(nnue_path)) {
+        nnue_load(NNUE_NET);
+      }
+      if (nnue_available) write_out("NNUE evaluation loaded.\n");
+      else                write_out("NNUE file not found, using classical evaluation.\n");
 #if TDLEAF
-    if (nnue_available) {
-      // Attempt to load previously learned weights (companion .tdleaf.bin file).
-      char tdleaf_path[512];
-      snprintf(tdleaf_path, sizeof(tdleaf_path), "%s%s",
-               exec_path, NNUE_TDLEAF_BIN);
-      // --init-tdleaf-zero always wins: zero-init regardless of .tdleaf.bin.
-      bool init_zero = false;
-      for (int ai = 1; ai < argc; ai++)
-        if (strcmp(argv[ai], "--init-tdleaf-zero") == 0) { init_zero = true; break; }
-      if (init_zero) {
-        fprintf(stderr, "TDLeaf: initializing from zero (FC/FT=0, PSQT=100cp/piece).\n");
-        nnue_backup_file(tdleaf_path);
-        nnue_backup_file(NNUE_TDLEAF_BIN);
-        nnue_init_zero_weights();
-        if (!nnue_save_fc_weights(tdleaf_path))
-            nnue_save_fc_weights(NNUE_TDLEAF_BIN);
-      } else {
+      if (nnue_available) {
+        // Attempt to load previously learned weights (companion .tdleaf.bin file).
+        char tdleaf_path[512];
+        snprintf(tdleaf_path, sizeof(tdleaf_path), "%s%s",
+                 exec_path, NNUE_TDLEAF_BIN);
         bool loaded = nnue_load_fc_weights(tdleaf_path);
         if (!loaded)
             loaded = nnue_load_fc_weights(NNUE_TDLEAF_BIN);
         if (!loaded)
           fprintf(stderr, "TDLeaf: no weights file found — using pretrained .nnue weights.\n"
-                          "TDLeaf: run with --init-tdleaf-zero to start training from scratch.\n");
+                          "TDLeaf: run with --init-nnue --write-nnue <file> to create a fresh net.\n");
       }
-    }
 #endif
+    }
   }
 #endif
 

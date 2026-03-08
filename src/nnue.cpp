@@ -197,6 +197,18 @@ static uint32_t read_u32(FILE *f) {
 }
 
 // ---------------------------------------------------------------------------
+// nnue_alloc_arrays — allocate heap FT arrays without loading a file.
+// Called by nnue_load() and by --init-nnue mode before nnue_init_zero_weights().
+// ---------------------------------------------------------------------------
+void nnue_alloc_arrays()
+{
+    if (!ft_biases)    ft_biases    = new int16_t[NNUE_HALF_DIMS];
+    if (!ft_weights)   ft_weights   = new int16_t[(size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS];
+    if (!psqt_weights) psqt_weights = new int32_t[(size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS];
+    nnue_available = true;
+}
+
+// ---------------------------------------------------------------------------
 // nnue_load
 // ---------------------------------------------------------------------------
 bool nnue_load(const char *path)
@@ -227,9 +239,7 @@ bool nnue_load(const char *path)
     uint32_t ft_hash = read_u32(f);
     printf("NNUE: ft_hash=0x%08X\n", ft_hash);
 
-    if (!ft_biases)    ft_biases    = new int16_t[NNUE_HALF_DIMS];
-    if (!ft_weights)   ft_weights   = new int16_t[(size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS];
-    if (!psqt_weights) psqt_weights = new int32_t[(size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS];
+    nnue_alloc_arrays();  // no-op if already allocated
 
     printf("NNUE: reading FT biases [%d int16] ...\n", NNUE_HALF_DIMS);
     if (!read_leb128_i16(f, ft_biases, NNUE_HALF_DIMS)) {
@@ -435,34 +445,39 @@ static bool write_leb128_i32(FILE *f, const int32_t *buf, size_t count)
 // ---------------------------------------------------------------------------
 bool nnue_write_nnue(const char *dst_path)
 {
-    if (!nnue_available || !nnue_loaded_path[0]) {
+    if (!nnue_available) {
         fprintf(stderr, "nnue_write_nnue: no net loaded\n");
         return false;
     }
 
-    FILE *src = fopen(nnue_loaded_path, "rb");
-    if (!src) {
-        fprintf(stderr, "nnue_write_nnue: cannot open source '%s'\n", nnue_loaded_path);
-        return false;
-    }
-
-    rewind(src);
-
-    // Read original header: version(4) + hash(4) + desc_size(4) + desc(N) + ft_hash(4)
-    uint32_t version, file_hash, orig_desc_size;
-    fread(&version,        sizeof(uint32_t), 1, src);
-    fread(&file_hash,      sizeof(uint32_t), 1, src);
-    fread(&orig_desc_size, sizeof(uint32_t), 1, src);
+    // Header: read from source file if one was loaded; otherwise use SF15.1 constants.
+    uint32_t version, file_hash, ft_hash;
     char orig_desc[4096] = {};
-    if (orig_desc_size > 0 && orig_desc_size < sizeof(orig_desc))
-        fread(orig_desc, 1, orig_desc_size, src);
-    uint32_t ft_hash;
-    fread(&ft_hash, sizeof(uint32_t), 1, src);
-    fclose(src);  // source no longer needed; FT written from memory
+    if (nnue_loaded_path[0]) {
+        FILE *src = fopen(nnue_loaded_path, "rb");
+        if (!src) {
+            fprintf(stderr, "nnue_write_nnue: cannot open source '%s'\n", nnue_loaded_path);
+            return false;
+        }
+        uint32_t orig_desc_size;
+        fread(&version,        sizeof(uint32_t), 1, src);
+        fread(&file_hash,      sizeof(uint32_t), 1, src);
+        fread(&orig_desc_size, sizeof(uint32_t), 1, src);
+        if (orig_desc_size > 0 && orig_desc_size < sizeof(orig_desc))
+            fread(orig_desc, 1, orig_desc_size, src);
+        fread(&ft_hash, sizeof(uint32_t), 1, src);
+        fclose(src);
+    } else {
+        // No source file (--init-nnue mode): use nn-ad9b42354671.nnue header constants.
+        version   = 0x7AF32F20u;
+        file_hash = 0x1C102EF2u;
+        ft_hash   = 0x7F2344B8u;
+        // orig_desc stays empty; description set below
+    }
 
     // Build new description.
     char new_desc[4096];
-    if (nnue_zero_initialized)
+    if (nnue_zero_initialized || !orig_desc[0])
         snprintf(new_desc, sizeof(new_desc), "Trained by EXchess TDLeaf");
     else
         snprintf(new_desc, sizeof(new_desc), "%s Trained by EXchess TDLeaf", orig_desc);
