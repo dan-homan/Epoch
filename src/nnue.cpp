@@ -1550,7 +1550,8 @@ void nnue_accumulate_gradients(const NNUEActivations &act, float grad_scale)
     //   ∂score_cp/∂psqt_diff = cp_factor/2 (half of the cp_factor used for positional)
     //   g_psqt_diff = grad_scale × 0.5  (grad_scale already includes cp_factor for positional)
     //   grad_psqt_w[fi × PSQT_BKTS + stack] += NNUE_PSQT_LR_SCALE × g_psqt_diff × (+1 for stm, -1 for opp)
-    //   NNUE_PSQT_LR_SCALE is tuned independently of NNUE_FT_LR_SCALE (see tdleaf.h).
+    //   NNUE_PSQT_LR_SCALE is large (~10000) because grad_scale is tiny (|grad_scale| ≈ 2e-4)
+    //   due to the 1/K and cp_factor terms in sig_grad, while psqt_f32 is at int32 scale (~5776/pawn).
     float g_psqt_diff = grad_scale * 0.5f;
     for (int p = 0; p < 2; p++) {
         int persp       = (p == 0) ? stm_p : (stm_p ^ 1);
