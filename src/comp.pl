@@ -14,11 +14,14 @@ if($ARGV[0]) {
 $filename = "EXchess_v" . $vers;
 
 $extra_arg = "";
+$overwrite = 0;
 for my $i (1..$#ARGV) {
     my $arg = $ARGV[$i];
     # NNUE_NET=filename and NNUE_TDLEAF_BIN=filename need string-literal quoting.
     # Also auto-derive NNUE_TDLEAF_BIN from NNUE_NET when only NNUE_NET is given.
-    if ($arg =~ /^NNUE_NET=(.+)$/) {
+    if ($arg eq "OVERWRITE") {
+        $overwrite = 1;
+    } elsif ($arg =~ /^NNUE_NET=(.+)$/) {
         my $net = $1;
         (my $tdleaf = $net) =~ s/\.nnue$/.tdleaf.bin/;
         $extra_arg .= " \"-D NNUE_NET=\\\"$net\\\"\"";
@@ -31,7 +34,7 @@ for my $i (1..$#ARGV) {
     }
 }
 
-if(-e "./$filename") { 
+if(-e "./$filename" && !$overwrite) {
     print "File $filename already exists!  Overwrite (y/n)? ";
     $resp = <STDIN>;
     chomp($resp);

@@ -174,6 +174,9 @@ def main():
     def resolve(name):
         if os.path.isabs(name):
             return name
+        cwd_path = os.path.join(os.getcwd(), name)
+        if os.path.isfile(cwd_path):
+            return cwd_path
         return os.path.join(run_dir, name)
 
     binary1 = resolve(args.binary)
