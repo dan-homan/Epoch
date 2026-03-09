@@ -246,25 +246,4 @@ Key hyperparameters (in `src/tdleaf.h`):
 
 ---
 
-## Remaining Work
-
-### Search parameter tuning
-
-The search's pruning parameters (null-move margins, futility thresholds, aspiration
-windows, LMR reduction tables) were tuned for the classical eval.  The NNUE eval has a
-different score distribution and may benefit from re-tuning these constants.  CLOP or a
-self-play tournament with systematic variation would be the appropriate approach.
-
-### Pawn hash unused under NNUE
-
-The classical eval stores pawn structure scores in a pawn hash table for reuse.  The NNUE
-eval bypasses the classical eval entirely, so `pawn hash hits` is always 0 in NNUE mode.
-The pawn hash memory (≈19 MB) is wasted when using NNUE.  Disabling or shrinking it at
-build time when `NNUE=1` would recover that memory, but has no effect on playing strength.
-
-### Multi-thread accumulator correctness
-
-The SMP search allocates one `ts_thread_data` per thread, each with its own
-`search_node n[MAXD+1]` stack including per-node accumulators.  Each thread's root
-accumulator is independently initialised in the startup loop.  Thread interactions have
-not been tested under NNUE; correctness is expected but unverified with THREADS > 1.
+See `TODO.md` for planned improvements and open investigations.
