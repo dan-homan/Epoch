@@ -544,14 +544,25 @@ def print_summary(orig, upd, ft_data=None):
 # ---------------------------------------------------------------------------
 
 def plot_overview(orig, upd, save):
-    """3×3 figure: one row per FC layer.  Cols: orig dist | delta dist | per-stack bar."""
-    fig, axes = plt.subplots(3, 3, figsize=(16, 11))
+    """
+    Col 0: two stacked panels per FC layer — top = file1, bottom = file2 (shared x).
+    Col 1: delta distribution (spans both sub-rows).
+    Col 2: per-stack bar (spans both sub-rows).
+    Layout: GridSpec(6 rows × 3 cols); each FC layer occupies 2 rows.
+    """
+    import matplotlib.gridspec as gridspec
+
     nnue_name   = orig.get('_name', 'original .nnue')
     tdleaf_name = upd.get('_name',  'updated .tdleaf.bin')
 
+    fig = plt.figure(figsize=(16, 11))
     fig.suptitle(f'FC weight comparison\n'
-                 f'blue = {nnue_name}   light red = {tdleaf_name}   orange = delta',
+                 f'blue = {nnue_name}   red = {tdleaf_name}   orange = delta',
                  fontsize=11)
+
+    gs = gridspec.GridSpec(6, 3, figure=fig,
+                           hspace=0.55, wspace=0.35,
+                           top=0.88, bottom=0.06, left=0.07, right=0.97)
 
     layers = [
         ('FC0 weights (16×1024)',  'fc0_w'),
@@ -559,37 +570,48 @@ def plot_overview(orig, upd, save):
         ('FC2 weights (32)',       'fc2_w'),
     ]
 
+    bins = np.arange(-128, 130) - 0.5
+
     for row, (layer_name, key) in enumerate(layers):
+        r = row * 2   # base row in the 6-row grid
+
         all_orig = np.concatenate(orig[key]).ravel().astype(np.int32)
         all_upd  = np.concatenate(upd[key]).ravel().astype(np.int32)
         delta    = all_upd - all_orig
 
-        # --- col 0: original weight distribution + file-2 overplot ---
-        ax = axes[row, 0]
-        bins = np.arange(-128, 130) - 0.5
-        ax.hist(all_orig, bins=bins, color='steelblue', alpha=0.50, density=True,
-                label=nnue_name, zorder=1)
-        ax.hist(all_upd,  bins=bins, color='lightcoral', alpha=0.50, density=True,
-                label=tdleaf_name, zorder=2)
-        ax.set_title(f'{layer_name}\nweight distribution')
-        ax.set_xlabel('weight value')
-        ax.set_ylabel('density')
-        ax.set_xlim(-130, 130)
-        ax.legend(fontsize=7, loc='upper right')
+        # --- col 0 top: file 1 distribution ---
+        ax_top = fig.add_subplot(gs[r, 0])
+        ax_top.hist(all_orig, bins=bins, color='steelblue', alpha=0.75, density=True)
+        ax_top.set_title(f'{layer_name}', fontsize=9, fontweight='bold')
+        ax_top.set_ylabel('density', fontsize=8)
+        ax_top.tick_params(labelbottom=False)
+        ax_top.set_xlim(-130, 130)
+        ax_top.text(0.98, 0.92, nnue_name, transform=ax_top.transAxes,
+                    fontsize=7, ha='right', va='top', color='steelblue')
 
-        # --- col 1: delta distribution ---
-        ax = axes[row, 1]
-        d_max = max(abs(int(delta.min())), abs(int(delta.max())), 1)
+        # --- col 0 bottom: file 2 distribution (shared x) ---
+        ax_bot = fig.add_subplot(gs[r + 1, 0], sharex=ax_top)
+        ax_bot.hist(all_upd, bins=bins, color='lightcoral', alpha=0.75, density=True)
+        ax_bot.set_ylabel('density', fontsize=8)
+        ax_bot.set_xlabel('weight value', fontsize=8)
+        ax_bot.set_xlim(-130, 130)
+        ax_bot.text(0.98, 0.92, tdleaf_name, transform=ax_bot.transAxes,
+                    fontsize=7, ha='right', va='top', color='firebrick')
+
+        # --- col 1: delta distribution (spans both sub-rows) ---
+        ax1 = fig.add_subplot(gs[r:r + 2, 1])
+        d_max  = max(abs(int(delta.min())), abs(int(delta.max())), 1)
         d_bins = np.arange(-d_max - 1, d_max + 2) - 0.5
-        ax.hist(delta, bins=d_bins, color='coral', alpha=0.85)
+        ax1.hist(delta, bins=d_bins, color='coral', alpha=0.85)
         n_nz = int(np.sum(delta != 0))
-        ax.set_title(f'{layer_name}\nΔ distribution  ({n_nz}/{delta.size} changed)')
-        ax.set_xlabel('Δ value (updated − original)')
-        ax.set_ylabel('count')
-        ax.axvline(0, color='k', linewidth=0.9, linestyle='--')
+        ax1.set_title(f'{layer_name}\nΔ distribution  ({n_nz}/{delta.size} changed)',
+                      fontsize=9)
+        ax1.set_xlabel('Δ value (updated − original)', fontsize=8)
+        ax1.set_ylabel('count', fontsize=8)
+        ax1.axvline(0, color='k', linewidth=0.9, linestyle='--')
 
-        # --- col 2: per-stack changed fraction + max|Δ| ---
-        ax = axes[row, 2]
+        # --- col 2: per-stack changed fraction + max|Δ| (spans both sub-rows) ---
+        ax2 = fig.add_subplot(gs[r:r + 2, 2])
         pcts  = []
         maxds = []
         for s in range(N_STACKS):
@@ -597,20 +619,18 @@ def plot_overview(orig, upd, save):
             pcts.append(100 * np.mean(d != 0))
             maxds.append(int(np.max(np.abs(d))))
         x = np.arange(N_STACKS)
-        ax.bar(x, pcts, color='mediumseagreen', alpha=0.80)
-        ax2 = ax.twinx()
-        ax2.plot(x, maxds, 'r^--', markersize=7, label='max |Δ|')
-        ax2.set_ylabel('max |Δ|', color='red', fontsize=9)
-        ax2.tick_params(axis='y', colors='red')
-        ax2.legend(loc='upper right', fontsize=8)
-        ax.set_xticks(x)
-        ax.set_xticklabels([f'S{i}' for i in x])
-        ax.set_title(f'{layer_name}\n% changed per stack')
-        ax.set_xlabel('stack')
-        ax.set_ylabel('% weights changed')
+        ax2.bar(x, pcts, color='mediumseagreen', alpha=0.80)
+        ax2r = ax2.twinx()
+        ax2r.plot(x, maxds, 'r^--', markersize=7, label='max |Δ|')
+        ax2r.set_ylabel('max |Δ|', color='red', fontsize=9)
+        ax2r.tick_params(axis='y', colors='red')
+        ax2r.legend(loc='upper right', fontsize=8)
+        ax2.set_xticks(x)
+        ax2.set_xticklabels([f'S{i}' for i in x])
+        ax2.set_title(f'{layer_name}\n% changed per stack', fontsize=9)
+        ax2.set_xlabel('stack', fontsize=8)
+        ax2.set_ylabel('% weights changed', fontsize=8)
 
-    plt.tight_layout()
-    fig.subplots_adjust(top=0.88)   # headroom for two-line suptitle
     if save:
         fig.savefig('fc_compare_overview.png', dpi=150)
         print("Saved fc_compare_overview.png")
