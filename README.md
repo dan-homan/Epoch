@@ -8,7 +8,7 @@
 
 EXchess first appeared around 1997–1998 and was one of a handful of serious open-source engines of that era.  Over two decades of on-and-off development produced a series of increasingly capable versions — from the early v2/v3 series through the v6 and v7 lines released in 2011–2017.
 
-The engine is written in C++, licensed under the GNU Public License, and communicates via the Chess Engine Communication Protocol (xboard/Winboard), with optional UCI support.  It includes a classical hand-crafted evaluation function, principal variation search (PVS), null-move pruning, late move reductions, static exchange evaluation, history heuristics, and a lazy SMP work-sharing implementation that achieves roughly 1.65× speedup on 2 threads and 2.5× on 4 threads.  An early form of Temporal Difference (TD-leaf) learning for evaluation tuning was present in older releases.
+The engine is written in C++, licensed under the GNU Public License, and communicates via the Chess Engine Communication Protocol (xboard/Winboard).  It includes a classical hand-crafted evaluation function, principal variation search (PVS), null-move pruning, late move reductions, static exchange evaluation, history heuristics, and a lazy SMP work-sharing implementation that achieves roughly 1.65× speedup on 2 threads and 2.5× on 4 threads.  An early form of Temporal Difference (TD-leaf) learning for evaluation tuning was present in older releases.
 
 The final pre-hiatus release was **v7.97b** (February 2017), rated around **2,772 Elo** on CCRL 40/40.  After that, development went quiet for approximately eight years.
 
@@ -107,7 +107,7 @@ The network file `nn-ad9b42354671.nnue` must be present in the same directory as
 
 ## Running
 
-EXchess speaks the **xboard/CECP** protocol.  Point any xboard-compatible GUI at the binary, or run it directly from the command line:
+EXchess speaks the **xboard/CECP** protocol exclusively.  Point any xboard-compatible GUI at the binary, or run it directly from the command line:
 
 ```sh
 cd run/
