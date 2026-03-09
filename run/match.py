@@ -222,8 +222,7 @@ def main():
 
         for it in range(1, args.iterations + 1):
             if args.pgn:
-                # Persistent PGN only — no per-iteration file
-                pgnout_args = ["-pgnout", args.pgn, "append"]
+                pgnout_args = ["-pgnout", args.pgn]
                 if multi:
                     print(f"--- Iteration {it} / {args.iterations} ---")
                 elif not gauntlet:
@@ -242,6 +241,7 @@ def main():
             cmd = base_cmd + pgnout_args + openings_args
 
             w, d, l, elo, elo_err, rc = run_match(cmd)
+
             if rc != 0:
                 print(f"\nError: cutechess-cli exited with code {rc} on iteration {it}.",
                       file=sys.stderr)
