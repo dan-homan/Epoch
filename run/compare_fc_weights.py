@@ -567,7 +567,7 @@ def plot_overview(orig, upd, save):
         # --- col 0: original weight distribution + file-2 overplot ---
         ax = axes[row, 0]
         bins = np.arange(-128, 130) - 0.5
-        ax.hist(all_orig, bins=bins, color='steelblue', alpha=0.75, density=True,
+        ax.hist(all_orig, bins=bins, color='steelblue', alpha=0.50, density=True,
                 label=nnue_name, zorder=1)
         ax.hist(all_upd,  bins=bins, color='lightcoral', alpha=0.50, density=True,
                 label=tdleaf_name, zorder=2)
@@ -610,7 +610,7 @@ def plot_overview(orig, upd, save):
         ax.set_ylabel('% weights changed')
 
     plt.tight_layout()
-    fig.subplots_adjust(top=0.92)   # nudge down just enough for suptitle
+    fig.subplots_adjust(top=0.88)   # headroom for two-line suptitle
     if save:
         fig.savefig('fc_compare_overview.png', dpi=150)
         print("Saved fc_compare_overview.png")
