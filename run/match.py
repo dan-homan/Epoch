@@ -221,18 +221,25 @@ def main():
         last_elo = last_elo_err = None
 
         for it in range(1, args.iterations + 1):
-            if multi:
-                root, ext = os.path.splitext(pgn_base)
-                pgn_out   = f"{root}_iter{it:02d}{ext}"
-                print(f"--- Iteration {it} / {args.iterations}   PGN: {pgn_out} ---")
-            else:
-                pgn_out = pgn_base
-                if not gauntlet:
-                    print(f"PGN output:  {pgn_out}")
-
-            cmd = base_cmd + ["-pgnout", pgn_out] + openings_args
             if args.pgn:
-                cmd += ["-pgnout", args.pgn, "append"]
+                # Persistent PGN only — no per-iteration file
+                pgnout_args = ["-pgnout", args.pgn, "append"]
+                if multi:
+                    print(f"--- Iteration {it} / {args.iterations} ---")
+                elif not gauntlet:
+                    print(f"PGN output:  {args.pgn}  (append)")
+            else:
+                if multi:
+                    root, ext = os.path.splitext(pgn_base)
+                    pgn_out   = f"{root}_iter{it:02d}{ext}"
+                    print(f"--- Iteration {it} / {args.iterations}   PGN: {pgn_out} ---")
+                else:
+                    pgn_out = pgn_base
+                    if not gauntlet:
+                        print(f"PGN output:  {pgn_out}")
+                pgnout_args = ["-pgnout", pgn_out]
+
+            cmd = base_cmd + pgnout_args + openings_args
 
             w, d, l, elo, elo_err, rc = run_match(cmd)
             if rc != 0:
