@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 #
-# Run a head-to-head match between two EXchess executables using cutechess-cli.
+# Run a head-to-head match or gauntlet between EXchess executables using cutechess-cli.
 # Run from the run directory:
 #
 #   python3 match.py EXchess_vA EXchess_vB [options]
+#   python3 match.py EXchess_vA EXchess_vB EXchess_vC ... [options]  # gauntlet
 #
 # Examples:
 #   python3 match.py EXchess_v2026_03_01 EXchess_vtest
@@ -12,105 +13,151 @@
 #   python3 match.py EXchess_vtrain EXchess_vtrain_ro -n 500 -i 10 --wait 500
 #     (10 sequential 500-game matches; engines restart between iterations so the
 #      read-only engine picks up the latest .tdleaf.bin weights each time)
+#   python3 match.py EXchess_vnew EXchess_v1 EXchess_v2 EXchess_v3 -n 100 --pgn all.pgn
+#     (gauntlet: probe engine vs three opponents; all games appended to all.pgn)
 #
 
 import argparse
+import math
 import os
+import re
 import subprocess
 import sys
 
 run_dir       = os.path.dirname(os.path.abspath(__file__))
 cutechess_cli = os.path.normpath(os.path.join(run_dir, "../tools/cutechess-1.4.0/build/cutechess-cli"))
 
+
 def resolve_exe(name):
     """Return absolute path: join with run_dir unless already absolute."""
     return name if os.path.isabs(name) else os.path.join(run_dir, name)
 
+
+def elo_from_wdl(w, d, l):
+    """
+    Compute Elo difference and ±95% CI from W/D/L counts (engine1 perspective).
+    Returns (elo, elo_err) or (None, None) if score is degenerate.
+    """
+    n = w + d + l
+    if n == 0:
+        return None, None
+    score = (w + 0.5 * d) / n
+    if score <= 0.0 or score >= 1.0:
+        return None, None
+    elo = -400.0 * math.log10(1.0 / score - 1.0)
+    # Propagate Wald std on score → Elo space
+    std   = math.sqrt(score * (1.0 - score) / n)
+    denom = math.log(10) * score * (1.0 - score)
+    elo_err = 400.0 * std / denom if denom != 0 else float("inf")
+    return elo, elo_err
+
+
+def run_match(cmd):
+    """
+    Run cutechess-cli, stream its output to stdout line-by-line, and capture the
+    final Score and Elo difference lines.
+
+    cutechess-cli output format (engine1 perspective):
+      Score of E1 vs E2: W - L - D  [pct]  N
+      Elo difference: ELO +/- ERR, LOS: ...
+
+    Returns (w, d, l, elo, elo_err, returncode).
+    w/d/l are engine1 wins/draws/losses; elo/elo_err may be None.
+    """
+    score_re = re.compile(
+        r"Score of .+? vs .+?:\s+(\d+)\s+-\s+(\d+)\s+-\s+(\d+)"
+    )
+    elo_re = re.compile(
+        r"Elo difference:\s*([+-]?\d+(?:\.\d+)?)\s*\+/-\s*(\d+(?:\.\d+)?)"
+    )
+
+    w = d = l = 0
+    elo = elo_err = None
+
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
+    )
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+        m = score_re.search(line)
+        if m:
+            # cutechess: "W - L - D" from engine1 perspective
+            w, l, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        m = elo_re.search(line)
+        if m:
+            elo     = float(m.group(1))
+            elo_err = float(m.group(2))
+
+    proc.wait()
+    return w, d, l, elo, elo_err, proc.returncode
+
+
 def main():
-    cpu_count = os.cpu_count() or 1
+    cpu_count           = os.cpu_count() or 1
     default_concurrency = max(1, cpu_count // 2)
 
     parser = argparse.ArgumentParser(
-        description="Run a match between two EXchess versions via cutechess-cli.",
+        description="Run a match or gauntlet between EXchess versions via cutechess-cli.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("engine1", help="First EXchess executable (name in run/ or absolute path)")
-    parser.add_argument("engine2", help="Second EXchess executable (name in run/ or absolute path)")
+    parser.add_argument("engine1", help="Probe engine (name in run/ or absolute path)")
+    parser.add_argument("opponents", nargs="+",
+                        help="Opponent engine(s). More than one → gauntlet mode.")
     parser.add_argument("-n", "--games", type=int, default=100,
-                        help="Total number of games to play per iteration (default: 100)")
+                        help="Games per iteration per opponent (default: 100)")
     parser.add_argument("-i", "--iterations", type=int, default=1,
-                        help="Number of sequential match iterations (default: 1); engines restart "
-                             "between iterations so a read-only TDLeaf engine picks up the latest "
-                             "weights at the start of each new match")
+                        help="Sequential iterations per opponent (default: 1); engines "
+                             "restart between iterations so a read-only TDLeaf engine "
+                             "picks up the latest weights each time")
     parser.add_argument("-c", "--concurrency", type=int, default=default_concurrency,
-                        help=f"Simultaneous games (default: {default_concurrency}, max: {cpu_count})")
+                        help=f"Simultaneous games (default: {default_concurrency})")
     parser.add_argument("-tc", "--time-control", default="10+0.1",
-                        help="Time control: 'moves/time+inc' or 'time+inc' in seconds (default: 10+0.1)")
-    parser.add_argument("-pgn", "--pgn-out", default=None,
-                        help="PGN output file base name (default: match_<engine1>_<engine2>.pgn); "
+                        help="Time control: 'moves/time+inc' or 'time+inc' in seconds "
+                             "(default: 10+0.1)")
+    parser.add_argument("--pgn", default=None, metavar="FILE",
+                        help="Persistent PGN: all games from all opponents/iterations are "
+                             "appended to this file (cutechess -pgnout FILE append)")
+    parser.add_argument("--pgn-out", default=None, metavar="FILE",
+                        help="Per-iteration PGN base name "
+                             "(default: match_<engine1>_vs_<engine2>.pgn); "
                              "with -i > 1 an iteration number is appended before the extension")
     parser.add_argument("--openings", default=None, metavar="FILE",
                         help="Openings file (.epd or .pgn); randomly ordered")
     parser.add_argument("--fischer-random", action="store_true", default=False,
-                        help="Use Chess960 / Fischer Random starting positions (-variant fischerandom)")
+                        help="Use Chess960 / Fischer Random starting positions")
     parser.add_argument("--ponder", action="store_true", default=False,
                         help="Enable pondering (default: off)")
     parser.add_argument("--wait", type=int, default=0, metavar="MS",
-                        help="Milliseconds to wait between games (-wait in cutechess-cli, default: 0)")
+                        help="Milliseconds to wait between games (default: 0)")
     args = parser.parse_args()
 
-    # Validate concurrency
+    # Validate
     if args.concurrency < 1:
         parser.error("--concurrency must be at least 1")
     if args.concurrency > cpu_count:
         print(f"Warning: concurrency {args.concurrency} exceeds CPU count {cpu_count}, clamping.",
               file=sys.stderr)
         args.concurrency = cpu_count
-
-    # Validate games and iterations
     if args.games < 1:
         parser.error("--games must be at least 1")
     if args.iterations < 1:
         parser.error("--iterations must be at least 1")
 
-    # Resolve and validate executables
+    # Resolve executables
     exe1 = resolve_exe(args.engine1)
-    exe2 = resolve_exe(args.engine2)
-    for exe in (exe1, exe2):
+    if not os.path.isfile(exe1):
+        print(f"Error: executable not found: {exe1}", file=sys.stderr)
+        sys.exit(1)
+
+    opponent_exes = []
+    for opp in args.opponents:
+        exe = resolve_exe(opp)
         if not os.path.isfile(exe):
             print(f"Error: executable not found: {exe}", file=sys.stderr)
             sys.exit(1)
+        opponent_exes.append(exe)
 
-    name1 = os.path.basename(args.engine1)
-    name2 = os.path.basename(args.engine2)
-
-    pgn_base = args.pgn_out or f"match_{name1}_vs_{name2}.pgn"
-
-    # Build the cutechess-cli command template (PGN path filled in per iteration).
-    # -rounds N plays N games for a two-engine match (one game per round).
-    # -games 2 with -rounds N//2 ensures each opening is played from both
-    # sides; we use this when the game count is even.
-    if args.games % 2 == 0:
-        rounds_arg = str(args.games // 2)
-        games_arg  = ["-games", "2", "-repeat"]
-    else:
-        rounds_arg = str(args.games)
-        games_arg  = []
-
-    base_cmd = [
-        cutechess_cli,
-        "-engine", f"cmd={exe1}", f"name={name1}", "proto=xboard", f"dir={run_dir}",
-        "-engine", f"cmd={exe2}", f"name={name2}", "proto=xboard", f"dir={run_dir}",
-        "-each",   f"tc={args.time_control}", *(["ponder"] if args.ponder else []),
-        *([ "-variant", "fischerandom"] if args.fischer_random else []),
-        "-concurrency", str(args.concurrency),
-        "-rounds", rounds_arg,
-        "-recover",
-        "-draw",   "movenumber=40", "movecount=8", "score=10",
-        "-resign", "movecount=6",   "score=600",
-        "-ratinginterval", "10",
-    ] + games_arg + (["-wait", str(args.wait)] if args.wait > 0 else [])
-
+    # Openings
     openings_args = []
     if args.openings:
         if not os.path.isfile(args.openings):
@@ -119,41 +166,136 @@ def main():
         fmt = "epd" if args.openings.lower().endswith(".epd") else "pgn"
         openings_args = ["-openings", f"file={args.openings}", f"format={fmt}", "order=random"]
 
-    multi = args.iterations > 1
+    name1    = os.path.basename(args.engine1)
+    gauntlet = len(args.opponents) > 1
+    multi    = args.iterations > 1
 
-    print(f"Match:       {name1}  vs  {name2}")
-    print(f"Games:       {args.games}   Iterations: {args.iterations}   "
+    # Header
+    print(f"Probe engine: {name1}")
+    if gauntlet:
+        print(f"Gauntlet vs:  {', '.join(os.path.basename(o) for o in args.opponents)}")
+    print(f"Games: {args.games}   Iterations: {args.iterations}   "
           f"Concurrency: {args.concurrency}   TC: {args.time_control}   "
-          f"Ponder: {'on' if args.ponder else 'off'}   "
           f"Fischer Random: {'on' if args.fischer_random else 'off'}")
+    if args.pgn:
+        print(f"Persistent PGN: {args.pgn}")
     if args.openings:
-        print(f"Openings:    {args.openings}")
+        print(f"Openings:     {args.openings}")
     print()
 
-    for it in range(1, args.iterations + 1):
-        if multi:
-            # Insert iteration number before the file extension.
-            root, ext = os.path.splitext(pgn_base)
-            pgn_out = f"{root}_iter{it:02d}{ext}"
-            print(f"--- Iteration {it} / {args.iterations}   PGN: {pgn_out} ---")
+    gauntlet_results = []   # (name2, total_w, total_d, total_l, display_elo, display_elo_err)
+    grand_w = grand_d = grand_l = 0
+
+    for opp_exe, opp_arg in zip(opponent_exes, args.opponents):
+        name2    = os.path.basename(opp_arg)
+        pgn_base = args.pgn_out or f"match_{name1}_vs_{name2}.pgn"
+
+        # rounds/games setup
+        if args.games % 2 == 0:
+            rounds_arg = str(args.games // 2)
+            games_arg  = ["-games", "2", "-repeat"]
         else:
-            pgn_out = pgn_base
-            print(f"PGN output:  {pgn_out}")
+            rounds_arg = str(args.games)
+            games_arg  = []
 
-        cmd = base_cmd + ["-pgnout", pgn_out] + openings_args
+        base_cmd = [
+            cutechess_cli,
+            "-engine", f"cmd={exe1}",    f"name={name1}", "proto=xboard", f"dir={run_dir}",
+            "-engine", f"cmd={opp_exe}", f"name={name2}", "proto=xboard", f"dir={run_dir}",
+            "-each",   f"tc={args.time_control}", *(["ponder"] if args.ponder else []),
+            *([ "-variant", "fischerandom"] if args.fischer_random else []),
+            "-concurrency", str(args.concurrency),
+            "-rounds", rounds_arg,
+            "-recover",
+            "-draw",   "movenumber=40", "movecount=8", "score=10",
+            "-resign", "movecount=6",   "score=600",
+            "-ratinginterval", "10",
+        ] + games_arg + (["-wait", str(args.wait)] if args.wait > 0 else [])
 
-        result = subprocess.run(cmd)
-        if result.returncode != 0:
-            print(f"\nError: cutechess-cli exited with code {result.returncode} on iteration {it}.",
-                  file=sys.stderr)
-            sys.exit(result.returncode)
+        if gauntlet:
+            print("=" * 60)
+            print(f"  vs {name2}")
+            print("=" * 60)
 
-        if multi and it < args.iterations:
-            print()
+        opp_w = opp_d = opp_l = 0
+        last_elo = last_elo_err = None
 
-    if multi:
-        print(f"\nAll {args.iterations} iterations complete "
+        for it in range(1, args.iterations + 1):
+            if multi:
+                root, ext = os.path.splitext(pgn_base)
+                pgn_out   = f"{root}_iter{it:02d}{ext}"
+                print(f"--- Iteration {it} / {args.iterations}   PGN: {pgn_out} ---")
+            else:
+                pgn_out = pgn_base
+                if not gauntlet:
+                    print(f"PGN output:  {pgn_out}")
+
+            cmd = base_cmd + ["-pgnout", pgn_out] + openings_args
+            if args.pgn:
+                cmd += ["-pgnout", args.pgn, "append"]
+
+            w, d, l, elo, elo_err, rc = run_match(cmd)
+            if rc != 0:
+                print(f"\nError: cutechess-cli exited with code {rc} on iteration {it}.",
+                      file=sys.stderr)
+                sys.exit(rc)
+
+            opp_w += w
+            opp_d += d
+            opp_l += l
+            if elo is not None:
+                last_elo, last_elo_err = elo, elo_err
+
+            if multi and it < args.iterations:
+                print()
+
+        # Elo for this opponent: aggregate W/D/L when multi-iteration, else cutechess's value
+        if multi or last_elo is None:
+            display_elo, display_elo_err = elo_from_wdl(opp_w, opp_d, opp_l)
+        else:
+            display_elo, display_elo_err = last_elo, last_elo_err
+
+        gauntlet_results.append((name2, opp_w, opp_d, opp_l, display_elo, display_elo_err))
+        grand_w += opp_w
+        grand_d += opp_d
+        grand_l += opp_l
+
+        if multi:
+            n   = opp_w + opp_d + opp_l
+            pct = (opp_w + 0.5 * opp_d) / n * 100 if n else 0
+            elo_s = (f"{display_elo:+.0f} ±{display_elo_err:.0f}"
+                     if display_elo is not None else "n/a")
+            print(f"\nIterations done: {args.iterations} × {args.games} = {n} games  "
+                  f"W={opp_w} D={opp_d} L={opp_l} [{pct:.1f}%]  Elo {elo_s}")
+        print()
+
+    # Gauntlet summary table
+    if gauntlet:
+        col_w = 32
+        print("=" * 74)
+        print(f"  GAUNTLET SUMMARY — {name1}")
+        print("=" * 74)
+        print(f"  {'Opponent':<{col_w}} {'Games':>6} {'W':>5} {'D':>5} {'L':>5}  "
+              f"{'Score%':>7}  {'Elo diff':>14}")
+        print("  " + "-" * 70)
+        for name2, w, d, l, elo, elo_err in gauntlet_results:
+            n   = w + d + l
+            pct = (w + 0.5 * d) / n * 100 if n else 0
+            elo_s = (f"{elo:+.0f} ±{elo_err:.0f}" if elo is not None else "n/a")
+            print(f"  {name2:<{col_w}} {n:>6} {w:>5} {d:>5} {l:>5}  {pct:>6.1f}%  {elo_s:>14}")
+        print("  " + "-" * 70)
+        n_tot   = grand_w + grand_d + grand_l
+        pct_tot = (grand_w + 0.5 * grand_d) / n_tot * 100 if n_tot else 0
+        tot_elo, tot_elo_err = elo_from_wdl(grand_w, grand_d, grand_l)
+        tot_elo_s = (f"{tot_elo:+.0f} ±{tot_elo_err:.0f}" if tot_elo is not None else "n/a")
+        print(f"  {'TOTAL':<{col_w}} {n_tot:>6} {grand_w:>5} {grand_d:>5} {grand_l:>5}  "
+              f"{pct_tot:>6.1f}%  {tot_elo_s:>14}")
+        print("=" * 74)
+
+    elif multi:
+        print(f"All {args.iterations} iterations complete "
               f"({args.iterations * args.games} games total).")
+
 
 if __name__ == "__main__":
     main()

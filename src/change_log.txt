@@ -94,6 +94,18 @@ Infrastructure:
              -- match.py: added --wait option (passes -wait MS to cutechess-cli); useful
                when multiple TDLeaf instances share a .tdleaf.bin and need breathing room
                between file-lock acquisitions.
+2026_03_09 -- match.py: gauntlet mode (multiple opponents), persistent PGN, Elo capture.
+               engine2 argument → opponents (nargs='+'); more than one opponent enters
+               gauntlet mode: probe engine is matched against each opponent in turn, with
+               a summary table printed at the end (Opponent | Games | W | D | L | Score% | Elo diff).
+               --pgn FILE: persistent PGN to which all games from all opponents/iterations
+               are appended (-pgnout FILE append to cutechess-cli).
+               --pgn-out FILE: per-iteration PGN base name (unchanged semantics, renamed
+               from old -pgn short form).
+               Output is streamed line-by-line via Popen; Score and Elo difference lines
+               are parsed from cutechess-cli output in real time.  Elo is computed from
+               aggregate W/D/L across iterations when -i > 1.
+               training_run.py updated to use --pgn-out (was -pgn).
              -- tdleaf_selfplay.py: engine name resolution now prefers CWD over the
                script directory, so the script works correctly when invoked from
                learn/ or other directories without resolving engines to run/.

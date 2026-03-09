@@ -265,7 +265,7 @@ def main():
         "-tc", tc,
         "-c", str(concurrency),
         "--wait", str(wait_ms),
-        "-pgn", pgn_base_path,
+        "--pgn-out", pgn_base_path,
     ]
     if fischer:
         match_cmd.append("--fischer-random")
