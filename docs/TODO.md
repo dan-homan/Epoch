@@ -36,6 +36,16 @@ bypasses classical eval entirely, so `pawn hash hits` is always 0 in NNUE mode a
 pawn hash memory (≈19 MB) is wasted.  Disabling or shrinking it at build time when
 `NNUE=1` would recover that memory (no effect on playing strength).
 
+### search.par revision
+Review whether `search.par` is still the right mechanism for runtime configuration —
+consider what parameters are still relevant, whether the file format should be updated,
+and how it interacts with xboard/cutechess invocation.
+
+### Linux compilation
+Verify that Epoch compiles and runs correctly on Linux.  The NEON SIMD optimisations
+(`vdotq_s32` etc.) are ARM-specific and will need `#ifdef` guards or x86 fallbacks
+(SSE/AVX via `_mm_dp_epi8` or plain scalar) for x86-64 Linux builds.
+
 ### Multi-thread accumulator correctness
 The SMP search allocates one `ts_thread_data` per thread, each with its own
 `search_node n[MAXD+1]` stack including per-node accumulators.  Each thread's root
