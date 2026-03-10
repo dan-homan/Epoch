@@ -39,6 +39,8 @@ python3 match.py Epoch_vnew Epoch_v1 Epoch_v2 Epoch_v3 \
 | `--pgn-out FILE` | auto | Per-iteration PGN (default: `match_<e1>_vs_<e2>.pgn`) |
 | `--fischer-random` | off | Chess960 starting positions |
 | `--wait MS` | 0 | Milliseconds between games (useful when sharing a `.tdleaf.bin`) |
+| `--depth1 N` | — | Limit engine1 search to depth N |
+| `--depth2 N` | — | Limit engine2 search to depth N |
 | `--openings FILE` | — | EPD or PGN openings file, randomly ordered |
 
 When more than one opponent is supplied the script enters **gauntlet mode** and

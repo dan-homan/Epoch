@@ -216,6 +216,8 @@ def main():
     concurrency = int(ask( "  Concurrency         [-c]        ", default_concurrency))
     wait_ms     = int(ask("  Wait between games  [--wait ms] ", 500))
     fischer     = ask_yes_no("  Fischer Random? [--fischer-random]", default="y")
+    depth_str   = ask("  Depth limit (both engines, 0=none) [--depth1/2]", "0")
+    depth       = int(depth_str) if depth_str.strip() else 0
 
     total_new   = n_games * n_iters
     total_after = prior_games + total_new
@@ -244,6 +246,8 @@ def main():
     print(f"  Prior games:      {prior_games:,}")
     print(f"  Total after run:  {total_after:,}")
     print(f"  TC: {tc}   Concurrency: {concurrency}   Wait: {wait_ms} ms")
+    if depth:
+        print(f"  Depth limit:      {depth} (both engines)")
     if fischer:
         print( "  Fischer Random:   yes")
     print(f"  PGN directory:    {pgn_dir}/")
@@ -272,6 +276,8 @@ def main():
     ]
     if fischer:
         match_cmd.append("--fischer-random")
+    if depth:
+        match_cmd += ["--depth1", str(depth), "--depth2", str(depth)]
 
     result = subprocess.run(match_cmd, cwd=run_dir)
     if result.returncode != 0:

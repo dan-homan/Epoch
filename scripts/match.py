@@ -125,6 +125,10 @@ def main():
                         help="Openings file (.epd or .pgn); randomly ordered")
     parser.add_argument("--fischer-random", action="store_true", default=False,
                         help="Use Chess960 / Fischer Random starting positions")
+    parser.add_argument("--depth1", type=int, default=None, metavar="N",
+                        help="Limit engine1 search to depth N (default: no limit)")
+    parser.add_argument("--depth2", type=int, default=None, metavar="N",
+                        help="Limit engine2 search to depth N (default: no limit)")
     parser.add_argument("--ponder", action="store_true", default=False,
                         help="Enable pondering (default: off)")
     parser.add_argument("--wait", type=int, default=0, metavar="MS",
@@ -174,9 +178,14 @@ def main():
     print(f"Probe engine: {name1}")
     if gauntlet:
         print(f"Gauntlet vs:  {', '.join(os.path.basename(o) for o in args.opponents)}")
+    depth_str = ""
+    if args.depth1 is not None or args.depth2 is not None:
+        d1 = str(args.depth1) if args.depth1 is not None else "unlimited"
+        d2 = str(args.depth2) if args.depth2 is not None else "unlimited"
+        depth_str = f"   Depth: {name1}={d1} / opponent={d2}"
     print(f"Games: {args.games}   Iterations: {args.iterations}   "
           f"Concurrency: {args.concurrency}   TC: {args.time_control}   "
-          f"Fischer Random: {'on' if args.fischer_random else 'off'}")
+          f"Fischer Random: {'on' if args.fischer_random else 'off'}{depth_str}")
     if args.pgn:
         print(f"Persistent PGN: {args.pgn}")
     if args.openings:
@@ -198,10 +207,17 @@ def main():
             rounds_arg = str(args.games)
             games_arg  = []
 
+        eng1_spec = [f"cmd={exe1}",    f"name={name1}", "proto=xboard", f"dir={run_dir}"]
+        eng2_spec = [f"cmd={opp_exe}", f"name={name2}", "proto=xboard", f"dir={run_dir}"]
+        if args.depth1 is not None:
+            eng1_spec.append(f"depth={args.depth1}")
+        if args.depth2 is not None:
+            eng2_spec.append(f"depth={args.depth2}")
+
         base_cmd = [
             cutechess_cli,
-            "-engine", f"cmd={exe1}",    f"name={name1}", "proto=xboard", f"dir={run_dir}",
-            "-engine", f"cmd={opp_exe}", f"name={name2}", "proto=xboard", f"dir={run_dir}",
+            "-engine", *eng1_spec,
+            "-engine", *eng2_spec,
             "-each",   f"tc={args.time_control}", *(["ponder"] if args.ponder else []),
             *([ "-variant", "fischerandom"] if args.fischer_random else []),
             "-concurrency", str(args.concurrency),
