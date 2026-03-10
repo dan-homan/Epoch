@@ -78,7 +78,7 @@ Epoch includes a complete **TDLeaf(λ)** reinforcement learning system (Baxter, 
 - Trains **all layers**: FC0, FC1, FC2, the 46 MB feature transformer, and PSQT weights
 - Uses PV leaf scores as the TD signal; gradients flow backward through the full NNUE forward pass
 - FT and PSQT are updated **sparsely** — only the ~30–60 active feature rows per position are touched
-- Weights are persisted to a companion `.tdleaf.bin` file after each game, supporting fine-tuning from the Stockfish 15.1 starting point or training from a randomly initialised network
+- Weights are persisted to a companion `.tdleaf.bin` file after each game, supporting fine-tuning from a starting, pre-trained .nnue or training from a randomly initialised network
 - **Concurrent multi-instance support:** multiple engine processes can share a single `.tdleaf.bin` via POSIX file locking and per-session delta accumulation with atomic rename
 
 Build with `NNUE=1 TDLEAF=1`.  See [`docs/TDLEAF.md`](docs/TDLEAF.md) for the full algorithm, gradient flow, file format, and hyperparameter reference.
@@ -138,6 +138,6 @@ GNU General Public License.  See [`docs/license.txt`](docs/license.txt) for the 
 ## Acknowledgements
 
 - Classical search and evaluation by **Daniel C. Homan** (1997–2017, 2026–present)
-- NNUE architecture and network weights from the [Stockfish](https://stockfishchess.org) project (GPL v3)
+- NNUE architecture and network statistics from the [Stockfish](https://stockfishchess.org) project (GPL v3).  
 - NNUE implementation, TDLeaf(λ) learning system, and 2026 restart developed in collaboration with **[Claude Code](https://claude.ai/claude-code)** (Anthropic)
 - [Chessprogramming wiki](https://www.chessprogramming.org) for algorithm references

@@ -267,9 +267,11 @@ python3 match.py Epoch_vtrain_a Epoch_vtrain_ro -n 200 -c 4 --wait 500
 
 ## Initialization
 
-**Default (fine-tuning):** When no `.tdleaf.bin` is found, the pretrained Stockfish 15.1
-FC/FT/PSQT weights (from the `.nnue` file) are used automatically.  Training proceeds as
-gradient updates from the SF15.1 starting point.
+**Default (fine-tuning):** When no `<network>.tdleaf.bin` is found, the default network 
+for that executable, `<network>.nnue`, is used as a starting point and training proceeds 
+as gradient updates from that starting point.  If `<network>.tdleaf.bin` is present, corresponding 
+to previous training, these values are loaded as updates to the default at startup. Any 
+additional training will further update the `<network>.tdleaf.bin` file.
 
 **Training from scratch:** Use `--init-nnue --write-nnue <file>` to create a randomly
 initialised `.nnue` with no source file required:
@@ -339,6 +341,8 @@ perl comp.pl train_fresh_ro NNUE=1 NNUE_NET=nn-fresh.nnue TDLEAF=1 TDLEAF_READON
 
 ## Self-Play Driver
 
-`scripts/tdleaf_selfplay.py` manages engine vs engine games, captures results, and runs the
-trained binary continuously.  `scripts/compare_nnue_learning.py` compares a `.tdleaf.bin`
+`scripts/training_run.py` manages the process of creating the necessary binaries 
+(if needed), specifies a baseline `.nnue` file, and sets up training matches.  
+
+`scripts/compare_nnue_learning.py` compares a `.tdleaf.bin`
 file against the baseline `.nnue` and shows FC, FT, and PSQT weight statistics.

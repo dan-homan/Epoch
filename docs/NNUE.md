@@ -15,12 +15,13 @@ g++ -o Epoch src/Epoch.cc -O3 -D VERS="dev" -D TABLEBASES=1 -D NNUE=1 -pthread
 or via the build script:
 
 ```sh
-perl comp.pl 2026_03_07a NNUE=1
+perl comp.pl 2026_03_07a NNUE=1 
 ```
 
-The network file `nn-ad9b42354671.nnue` (Stockfish 15.1 exact release, 47 MB) must be in
-the same directory as the binary, or in the directory from which the engine is launched.
-It can be downloaded from: https://github.com/official-stockfish/networks
+The network file currently defaults to `nn-ad9b42354671.nnue` (Stockfish 15.1 release, 47 MB) which must be in
+the same directory as the binary, or in the directory from which the engine is launched.  
+It can be downloaded from: https://github.com/official-stockfish/networks. Other compatitible networks can be 
+specified with the compile variable NNUE_NET=filename.
 
 When NNUE is not compiled in (`-D NNUE=0` or omitted), the classical eval is used
 unchanged.  When NNUE is compiled in but the network file is not found, the engine falls
