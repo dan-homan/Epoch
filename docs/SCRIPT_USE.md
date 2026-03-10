@@ -148,6 +148,58 @@ python3 /path/to/run/run_epoch.py Epoch_v2026_03_09a
 
 ---
 
+## bayeselo_ratings.py
+
+Compute a Bayesian Elo rating list for all players in a PGN file, using the
+`tools/BayesElo/bayeselo` binary.  Can be invoked from anywhere.
+
+```sh
+# Basic usage
+python3 scripts/bayeselo_ratings.py learn/pgn/fresh-260309-testing.pgn
+
+# Exclude players with fewer than 50 games
+python3 scripts/bayeselo_ratings.py results.pgn --min 50
+
+# Also optimise first-move advantage and draw-Elo
+python3 scripts/bayeselo_ratings.py results.pgn --advantage --drawelo
+
+# Use a non-default bayeselo binary
+python3 scripts/bayeselo_ratings.py results.pgn --bayeselo /usr/local/bin/bayeselo
+```
+
+Example output:
+
+```
+Bayesian Elo ratings — fresh-260309-testing.pgn
+5612 games loaded, 7 players rated
+
+Rank  Name                            Elo     ±  Games   Score   Oppo  Draws
+----------------------------------------------------------------------------
+   1  EXchess_classical             +1031   213    500    100%    +66     0%
+   2  Epoch_vnn-fresh-260309-4000g    +66    17   2612     68%    -11    10%
+   3  EXchess_classic_material         -8    56    112     40%    +66    24%
+   4  Epoch_vnn-fresh-260309-2000g    -79    15   2000     68%   -236    18%
+   5  Epoch_vnn-fresh-260309-1000g   -219    15   2000     48%   -201    20%
+   6  Epoch_vnn-fresh-260309-500g    -324    15   2000     33%   -175    19%
+   7  Epoch_vnn-fresh-260309         -467    18   2000     16%   -139    12%
+```
+
+Ratings are relative (zero-sum); absolute scale depends on which players are
+included.  The `±` column is the larger of the two asymmetric confidence
+intervals returned by BayesElo.  `Oppo` is the average Elo of opponents faced.
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `pgn` | *(required)* | PGN file to analyse |
+| `--bayeselo PATH` | `tools/BayesElo/bayeselo` | Path to the bayeselo binary |
+| `--min N` | 0 | Exclude players with fewer than N games |
+| `--advantage` | off | Optimise first-move advantage alongside ratings |
+| `--drawelo` | off | Optimise draw-Elo alongside ratings |
+
+---
+
 ## tdleaf_selfplay.py
 
 *(Not in active use.)*  Earlier self-play driver for TDLeaf training, predating

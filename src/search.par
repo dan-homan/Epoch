@@ -34,7 +34,7 @@ THREADS              1    # number of processors to use, this may be changed
 
 # Endgame Tablebases - if you have them installed
 
-EGTB_PATH            /Users/homand/Epoch/TB
+EGTB_PATH            /Users/danielhoman/Epoch/TB
 EGTB_CACHE_SIZE    8.0     # Tablebase cache size in megabytes
 
 # Log File

@@ -345,11 +345,11 @@ int main(int argc, char *argv[])
 
   if(!xboard) {
     cout << "\nEpoch Chess Engine version " << VERS << VERS2 << " (beta),"
-         << "\nCopyright (C) 1997-2017 Daniel C. Homan, Granville OH, USA"
+         << "\nCopyright (C) 1997-2026 Daniel C. Homan, Granville OH, USA"
          << "\nEpoch comes with ABSOLUTELY NO WARRANTY. This is free"
          << "\nsoftware, and you are welcome to redistribute it under"
          << "\ncertain conditions. This program is distributed under the"
-         << "\nGNU public license.  See the files license.txt and readme.txt"
+         << "\nGNU public license.  See the file license.txt"
          << "\nfor more information.\n\n";
 
     //    cout << sizeof(cmove_rec) << "\n";
@@ -363,10 +363,9 @@ int main(int argc, char *argv[])
     cout << "Cmove size = " << CMOVE_SIZE << " individual entries, "
          << CMOVE_SIZE*sizeof(cmove_rec)/1048576 << " Mbytes\n\n";
     cout << "Type 'help' for a list of commands.\n";
-    
-    if(TRAIN_EVAL) {
-        cout << "\nWARNING -- Eval training mode active, slower search!\n";
-    }    
+    if(MATERIAL_ONLY) {
+        cout << "\nWARNING -- Material-only eval mode active.\n";
+    }
   } else { 
 
     // catch signals for xboard interface
@@ -1022,15 +1021,6 @@ void parse_command()
     game.setboard(i_pos, 'w', "KQkq", "-");
     build_book(game.pos); 
   }
-#if TRAIN_EVAL
-  else if(!strcmp(response, "train_eval") && !xboard) { 
-     game.train_eval(); 
-  }
-  else if(!strcmp(response, "build_fen") && !xboard) { 
-     game.setboard(i_pos, 'w', "KQkq", "-");
-     game.build_fen_list(); 
-  }
-#endif
   else if(!strcmp(response, "memory") || !strcmp(response, "hash"))
     { cin >> Mbytes; set_hash_size(ABS(Mbytes));
       if(!xboard) {

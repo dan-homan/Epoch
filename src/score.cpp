@@ -33,6 +33,9 @@ inline int position::pawn_guard(int tsq, int side, pawn_data *pawn_record) {
 
 int position::score_pos(game_rec *gr, ts_thread_data *tdata NNUE_ACC_DEF)
 {
+#if MATERIAL_ONLY
+   return material;
+#endif
 #if NNUE
    // -------------------------------------------------------------------
    // NNUE evaluation: bypass classical eval when the net is loaded and
@@ -42,7 +45,7 @@ int position::score_pos(game_rec *gr, ts_thread_data *tdata NNUE_ACC_DEF)
      tdata->eval_count++;
      // Probe score hash table (same mechanism as classical eval)
      score_rec *scores_n = score_table + (((SCORE_SIZE-1)*((hcode)&MAX_UINT))/MAX_UINT);
-     if (scores_n->get_key() == hcode && (!TRAIN_EVAL)) {
+     if (scores_n->get_key() == hcode) {
        int cached = scores_n->score;
        if (scores_n->get_key() == hcode) {
          tdata->shash_count++;
@@ -103,7 +106,7 @@ int position::score_pos(game_rec *gr, ts_thread_data *tdata NNUE_ACC_DEF)
    //-----------------------------------
    scores = score_table + (((SCORE_SIZE-1)*((hcode)&MAX_UINT))/MAX_UINT);
    //   scores = score_table+(hcode&(SCORE_SIZE-1));
-   if(scores->get_key() == hcode && (!TRAIN_EVAL)) {
+   if(scores->get_key() == hcode) {
      qchecks[0] = scores->qchecks[0];
      qchecks[1] = scores->qchecks[1];
      score = scores->score;
@@ -123,15 +126,7 @@ int position::score_pos(game_rec *gr, ts_thread_data *tdata NNUE_ACC_DEF)
 | Score the material on the board
 |
 +++++++++++++++++++++++++++++++++*/
-   if(!TRAIN_EVAL) {
-     score = (wtm ? (material) : -(material));
-   } else {
-     score = 0;
-     for(int piece = PAWN; piece < KING; piece++) {
-       score += plist[WHITE][piece][0]*value[piece];
-       score -= plist[BLACK][piece][0]*value[piece];
-     }
-   }
+   score = (wtm ? (material) : -(material));
 
    // reset flag about whether to do checks in qsearch 
    //  -- might be set again in the score_king function below
@@ -163,7 +158,7 @@ int position::score_pos(game_rec *gr, ts_thread_data *tdata NNUE_ACC_DEF)
    pawns = pawn_table + (((PAWN_SIZE-1)*((pcode)&MAX_UINT))/MAX_UINT);
    //pawns = pawn_table+(pcode&(PAWN_SIZE-1));
    pawn_record = pawns->data;
-   if(pawns->get_key() == pcode && (!TRAIN_EVAL)) {
+   if(pawns->get_key() == pcode) {
     score += pawn_record.score;
     tdata->phash_count++;
    } else {

@@ -2029,7 +2029,6 @@ int search_node::qsearch(int alpha, int beta, int qply)
   tdata->node_count++; tdata->q_count++;
 
 
-#if (!TRAIN_EVAL)  
   // ----------------------------------------------------------
   //     Check search interrupt... defined in search.h
   // ----------------------------------------------------------
@@ -2104,8 +2103,6 @@ int search_node::qsearch(int alpha, int beta, int qply)
 #endif  /* TABLEBASES */
   }
  
-#endif   /* end train_eval loop */
- 
   //--------------------------------------------------------
   // must put a blank move in the principle continuation
   // because we may choose to make no move during qsearch
@@ -2136,7 +2133,6 @@ int search_node::qsearch(int alpha, int beta, int qply)
   // - reset qsearch nodes
   // - check hash table 
   //---------------------------  
-#if (!TRAIN_EVAL)
   //if(!qply) {
     hscore = get_hash(&pos.hcode, &hflag, &hdepth, &pos.hmove, ply, &singular);
     if(hscore != HASH_MISS) {
@@ -2167,7 +2163,6 @@ int search_node::qsearch(int alpha, int beta, int qply)
       }
     }
     //}
-#endif  /* end train eval loop */
 
   //-------------------------------------
   // Now the rest of the normal qsearch
@@ -2178,7 +2173,7 @@ int search_node::qsearch(int alpha, int beta, int qply)
   //  Generate a score for the position
   // ------------------------------------ 
   if(!pos.check) { 
-    if(pos.last.t || TRAIN_EVAL) {  // we already have a score if the last was a null move
+    if(pos.last.t) {  // we already have a score if the last was a null move
       // Generate a pre-move score for the position
       premove_score = pos.score_pos(gr, tdata NNUE_ACC_ARG);
     }

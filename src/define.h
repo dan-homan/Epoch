@@ -50,11 +50,6 @@
  #define TRAINING_MODE   0
 #endif
 
-// define a TRAIN_EVAL parameter
-#ifndef TRAIN_EVAL
- #define TRAIN_EVAL 0
-#endif
-
 // NNUE evaluation (Stockfish HalfKAv2-hm compatible)
 // Compile with -D NNUE=1 and place the net file next to the binary.
 #ifndef NNUE
@@ -69,6 +64,12 @@
 #endif
 #ifndef NNUE_TDLEAF_BIN
  #define NNUE_TDLEAF_BIN "nn-ad9b42354671.tdleaf.bin"
+#endif
+
+// Return material-only score from score_pos(), bypassing all positional eval.
+// Compile with -D MATERIAL_ONLY=1.
+#ifndef MATERIAL_ONLY
+ #define MATERIAL_ONLY 0
 #endif
 
 // TDLeaf(λ) online learning for the NNUE FC layers.

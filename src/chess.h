@@ -526,9 +526,7 @@ struct game_rec {
   void setboard(const char inboard[256], const char ms, const char castle[5], const char ep[3]);
   void test_suite(char *testfile, char *resfile, float testtime, int fixed_depth);
   void board_edit();
-  void build_fen_list();
-  void train_eval();
-  
+
 }; 
 
 #endif  /* CHESS_H */
