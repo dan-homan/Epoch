@@ -35,17 +35,6 @@ The read-only opponent (`_ro`) reloads the latest `.tdleaf.bin` weights at the s
 
 Network snapshots were saved at **500, 1000, 2000, and 4000 games**.
 
-**Training sessions:**
-
-| File | Games |
-|------|------:|
-| `match_nn-fresh-260309.pgn` (initial) | 1,000 |
-| `match_nn-fresh-260309_iter01.pgn` | 1,000 |
-| `match_nn-fresh-260309_iter02.pgn` | 1,000 |
-| `match_nn-fresh-260309_iter03.pgn` | 500 |
-| `match_nn-fresh-260309_iter04.pgn` | 500 |
-| **Total** | **4,000** |
-
 ---
 
 ## Testing Procedure
