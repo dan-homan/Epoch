@@ -30,8 +30,12 @@ For a game of T half-moves:
 
 ```
 e_{T-1} = z - d_{T-1}
-e_t     = (d_{t+1} - d_t) + λ * e_{t+1}     for t = T-2 … 0
+e_t     = clip(d_{t+1} - d_t) + λ * e_{t+1}     for t = T-2 … 0
 ```
+
+where `clip(d_{t+1} - d_t)` applies proportional scaling when the white-POV score
+change between consecutive moves exceeds `TDLEAF_SCORE_CLIP_CP` centipawns — see
+[Horizon Noise Mitigation](#horizon-noise-mitigation) below.
 
 **Weight update (gradient ascent on prediction accuracy):**
 
@@ -92,12 +96,13 @@ struct TDRecord {
     int     score_stm;                        // NNUE static eval at leaf, STM POV (cp)
     int     stack;                            // layer-stack index (piece_count-1)/4
     bool    wtm;                              // White to move at leaf
+    float   id_score_variance;               // variance of last TD_ID_HIST ID-depth scores (cp²)
     int     ft_idx[2][NNUE_MAX_FT_PER_PERSP]; // active FT feature indices
     int8_t  n_ft[2];                          // active feature count per perspective
 };
 ```
 
-Memory: ≈ (2×2048 + 8×4 + 4+4+1 + 2×64×4 + 2) bytes × 400 plies ≈ 2.3 MB.
+Memory: ≈ (2×2048 + 8×4 + 4+4+1+4 + 2×64×4 + 2) bytes × 400 plies ≈ 2.3 MB.
 
 ### `TDGameRecord`
 
@@ -320,8 +325,11 @@ perl comp.pl train_fresh_ro NNUE=1 NNUE_NET=nn-fresh.nnue TDLEAF=1 TDLEAF_READON
 |----------|--------|
 | `src/define.h` | `#ifndef TDLEAF / #define TDLEAF 0 / #endif` |
 | `src/chess.h` — `game_rec` | `TDGameRecord td_game` inside `#if TDLEAF` |
+| `src/chess.h` — `tree_search` | `int id_scores[TD_ID_HIST]; int id_score_count;` (TD_ID_HIST=4) for ID history |
 | `src/nnue.cpp` — `nnue_load()` | Calls `nnue_init_fp32_weights()` inside `#if TDLEAF` |
-| `src/main.cpp` — after `ts.search()` | `tdleaf_record_ply()` with root acc + PV |
+| `src/search.cpp` — search start | `id_score_count = 0;` reset at the start of each search |
+| `src/search.cpp` — after each ID iteration | Appends current `g` to `id_scores[]` ring, increments `id_score_count` |
+| `src/main.cpp` — after `ts.search()` | `tdleaf_record_ply()` with root acc + PV + `id_scores` + `id_score_count` |
 | `src/main.cpp` — `game.over = 1` sites | `tdleaf_update_after_game()` |
 | `src/main.cpp` — `new_game` / `setboard` | `td_game.n_plies = 0` |
 | `src/Epoch.cc` | `#if TDLEAF #include "tdleaf.cpp" #endif` |
@@ -346,3 +354,64 @@ perl comp.pl train_fresh_ro NNUE=1 NNUE_NET=nn-fresh.nnue TDLEAF=1 TDLEAF_READON
 
 `scripts/compare_nnue_learning.py` compares a `.tdleaf.bin`
 file against the baseline `.nnue` and shows FC, FT, and PSQT weight statistics.
+
+---
+
+## Horizon Noise Mitigation
+
+### Problem
+
+TDLeaf uses consecutive leaf scores to form TD errors.  When the score changes
+dramatically from one ply to the next (e.g., 300+ cp), it is often because the
+*next* position falls into a tactical sequence that lies beyond the current search
+horizon — a tactic the current position's evaluator cannot see.  Treating that
+large score jump as a genuine evaluation signal distorts the gradient: the network
+is penalised for correctly evaluating a position it cannot see past.
+
+### Approach 1 — Score-change clipping (TDLEAF_SCORE_CLIP_CP)
+
+When the white-POV score change between consecutive moves exceeds
+`TDLEAF_SCORE_CLIP_CP` (default 200 cp), the `d[t+1] - d[t]` contribution to the
+eligibility trace is scaled down *proportionally* so the effective change is capped
+at 200 cp-equivalent:
+
+```
+delta_d  = d[t+1] - d[t]
+delta_cp = |score_white[t+1] - score_white[t]|
+if delta_cp > TDLEAF_SCORE_CLIP_CP:
+    delta_d *= TDLEAF_SCORE_CLIP_CP / delta_cp
+e[t] = delta_d + λ * e[t+1]
+```
+
+This preserves the *direction* of the update while reducing its magnitude when the
+score swing is large.  Set `TDLEAF_SCORE_CLIP_CP` to a very large value (e.g., 1e6)
+to disable this approach.
+
+### Approach 2 — Iterative-deepening stability weighting (TDLEAF_ID_VAR_SIGMA2)
+
+The last `TD_ID_HIST = 4` iterative-deepening scores are tracked in
+`tree_search::id_scores[]`.  At each ply, their variance is stored in
+`TDRecord::id_score_variance` (units: cp²).  During the update, the gradient scale
+is multiplied by a soft weight:
+
+```
+id_weight = 1 / (1 + id_score_variance / TDLEAF_ID_VAR_SIGMA2)
+grad_scale *= id_weight
+```
+
+Positions with stable ID scores (low variance) receive full weight; positions whose
+score fluctuated across search depths are down-weighted.  `TDLEAF_ID_VAR_SIGMA2`
+(default 10 000 cp²) is the reference variance — a position with variance equal to
+`TDLEAF_ID_VAR_SIGMA2` receives half weight.  Set `TDLEAF_ID_VAR_SIGMA2` to a very
+large value to disable this approach.
+
+### Tuning guidance
+
+| Hyperparameter | Default | Effect of increasing | Effect of decreasing |
+|----------------|---------|---------------------|---------------------|
+| `TDLEAF_SCORE_CLIP_CP` | 200 cp | Less clipping; more sensitive to large swings | More aggressive attenuation of large score changes |
+| `TDLEAF_ID_VAR_SIGMA2` | 10 000 cp² | More tolerant of unstable ID scores | Stronger down-weighting of ID-unstable positions |
+
+Both approaches are active simultaneously by default.  Use the ablation plan in
+`docs/TODO.md` to isolate their individual contributions.  A good starting ablation:
+run 500 games with each configuration and compare Elo gain per game vs. the baseline.

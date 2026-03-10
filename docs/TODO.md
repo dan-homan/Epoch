@@ -48,6 +48,42 @@ only the forward and backward NNUE passes at the fixed stored positions.
 time.  Run a 500-game ablation comparing K=1 (current), K=2, and K=4 on the
 same starting network and measure Elo gain per wall-clock hour.
 
+### Horizon noise mitigation — ablation testing plan
+
+Two mechanisms were added to reduce the influence of tactics-beyond-horizon on TD
+errors: score-change clipping (`TDLEAF_SCORE_CLIP_CP`) and ID-stability weighting
+(`TDLEAF_ID_VAR_SIGMA2`).  Their contributions should be isolated before committing
+to the combined defaults.
+
+**Recommended ablation (500 games per arm, same starting network):**
+
+| Arm | TDLEAF_SCORE_CLIP_CP | TDLEAF_ID_VAR_SIGMA2 | Description |
+|-----|---------------------|---------------------|-------------|
+| A (baseline) | 1e6 (disabled) | 1e6 (disabled) | Original algorithm |
+| B (clip only) | 200 cp | 1e6 (disabled) | Approach 1 only |
+| C (ID weight only) | 1e6 (disabled) | 10 000 cp² | Approach 2 only |
+| D (combined) | 200 cp | 10 000 cp² | Both active (current default) |
+
+**Metric:** Elo gain per game vs. the starting network (use `bayeselo_ratings.py` on
+a 100-game test match against the starting network after each 500-game training run).
+
+**Override hyperparameters at build time:**
+
+```sh
+# Arm A — no mitigation
+perl comp.pl train_arm_a NNUE=1 NNUE_NET=nn-start.nnue TDLEAF=1 \
+  -D TDLEAF_SCORE_CLIP_CP=1000000.0f -D TDLEAF_ID_VAR_SIGMA2=1000000.0f
+
+# Arm B — clip only
+perl comp.pl train_arm_b NNUE=1 NNUE_NET=nn-start.nnue TDLEAF=1 \
+  -D TDLEAF_SCORE_CLIP_CP=200.0f -D TDLEAF_ID_VAR_SIGMA2=1000000.0f
+```
+
+(Similarly for arms C and D.)
+
+**After the ablation:** if one approach dominates, drop the other to reduce
+complexity.  If both help, the combined default is confirmed.
+
 ### Bias initialisation
 FC biases and FT biases are currently initialised from the SF15.1 distribution (random
 N(μ,σ)).  Consider initialising all biases to 0 and letting TDLeaf learn them from
