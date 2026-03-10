@@ -272,7 +272,7 @@ int main(int argc, char *argv[])
       logfile.clear();
       logfile << "===============================\n"; 
       logfile << "=\n";
-      logfile << "= Log file for EXchess v" << VERS << VERS2 << "\n";
+      logfile << "= Log file for Epoch v" << VERS << VERS2 << "\n";
       logfile << "=\n";
       logfile << "===============================\n"; 
     }
@@ -344,9 +344,9 @@ int main(int argc, char *argv[])
 #endif
 
   if(!xboard) {
-    cout << "\nExperimental Chess Program (EXchess) version " << VERS << VERS2 << " (beta),"
+    cout << "\nEpoch Chess Engine version " << VERS << VERS2 << " (beta),"
          << "\nCopyright (C) 1997-2017 Daniel C. Homan, Granville OH, USA"
-         << "\nEXchess comes with ABSOLUTELY NO WARRANTY. This is free"
+         << "\nEpoch comes with ABSOLUTELY NO WARRANTY. This is free"
          << "\nsoftware, and you are welcome to redistribute it under"
          << "\ncertain conditions. This program is distributed under the"
          << "\nGNU public license.  See the files license.txt and readme.txt"
@@ -730,11 +730,11 @@ void help()
  cout <<   "\n      Nf3, e4, O-O, d8=Q, Bxf7, Ned7, etc....";
  cout <<   "\n      Other notation's like: g1f3, e2e4, etc... are also ok.";
  cout << "\n\n   new            -> start a new game";
- cout <<   "\n   quit           -> end EXchess";
+ cout <<   "\n   quit           -> end Epoch";
  cout <<   "\n   save           -> save the game to a text file";
  cout <<   "\n   go             -> computer takes side on move";
- cout <<   "\n   white          -> white to move, EXchess takes black";
- cout <<   "\n   black          -> black to move, EXchess takes white";
+ cout <<   "\n   white          -> white to move, Epoch takes black";
+ cout <<   "\n   black          -> black to move, Epoch takes white";
  cout <<   "\n   book           -> toggle opening book";
  cout <<   "\n   post           -> turn on display of computer thinking";
  cout <<   "\n   nopost         -> turn off display of computer thinking";
@@ -1001,7 +1001,7 @@ void parse_command()
       cout << "feature smp=1\n";
       cout << "feature memory=1\n";
       cout << "feature variants=\"normal,nocastle,fischerandom\"\n";
-      cout << "feature myname=\"EXchess v" << VERS << VERS2 << "\"\n";
+      cout << "feature myname=\"Epoch v" << VERS << VERS2 << "\"\n";
       snprintf(outstring, sizeof(outstring), "feature option=\"Playing Strength -slider %i 1 100\n", game.knowledge_scale);
       cout << outstring;
       cout << "feature done=1\n";
@@ -1205,9 +1205,9 @@ void save_game()
     strcpy(Event, "Chess Match");
     strcpy(Date, "??.??.????");
     if (game.p_side)
-     { strcpy(White, "Human"); strcpy(Black, "EXchess"); }
+     { strcpy(White, "Human"); strcpy(Black, "Epoch"); }
     else
-     { strcpy(White, "EXchess"); strcpy(Black, "Human"); }
+     { strcpy(White, "Epoch"); strcpy(Black, "Human"); }
   }
 
   ofstream outfile(gname);

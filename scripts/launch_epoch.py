@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 #
-# Launch cutechess GUI with a specified EXchess executable registered as an engine.
+# Launch cutechess GUI with a specified Epoch executable registered as an engine.
 # Run from the run directory:
 #
-#   python3 launch_exchess.py EXchess_v2026_03_01
+#   python3 launch_exchess.py Epoch_v2026_03_01
 #
 # The engine is added/updated in cutechess's engines.json config, then
 # the cutechess GUI is launched.  If no executable is specified, defaults
-# to "EXchess".
+# to "Epoch".
 #
 
 import json
@@ -18,7 +18,7 @@ run_dir  = os.path.dirname(os.path.abspath(__file__))
 cutechess = os.path.normpath(os.path.join(run_dir, "../tools/cutechess-1.4.0/build/cutechess"))
 engines_json = os.path.expanduser("~/.config/cutechess.com/engines.json")
 
-exe_name = sys.argv[1] if len(sys.argv) > 1 else "EXchess"
+exe_name = sys.argv[1] if len(sys.argv) > 1 else "Epoch"
 exe_path = os.path.join(run_dir, exe_name) if not os.path.isabs(exe_name) else exe_name
 
 if not os.path.isfile(exe_path):

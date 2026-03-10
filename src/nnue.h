@@ -1,4 +1,4 @@
-// EXchess NNUE evaluation — HalfKAv2_hm format (Stockfish 15.1 exact)
+// Epoch NNUE evaluation — HalfKAv2_hm format (Stockfish 15.1 exact)
 //
 // Architecture (confirmed from file structure — each stack is 17,640 bytes):
 //   Features = HalfKAv2_hm — king-square bucket × all-piece-square

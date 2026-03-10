@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 #
-# Run a head-to-head match or gauntlet between EXchess executables using cutechess-cli.
+# Run a head-to-head match or gauntlet between Epoch executables using cutechess-cli.
 # Run from the run directory:
 #
-#   python3 match.py EXchess_vA EXchess_vB [options]
-#   python3 match.py EXchess_vA EXchess_vB EXchess_vC ... [options]  # gauntlet
+#   python3 match.py Epoch_vA Epoch_vB [options]
+#   python3 match.py Epoch_vA Epoch_vB Epoch_vC ... [options]  # gauntlet
 #
 # Examples:
-#   python3 match.py EXchess_v2026_03_01 EXchess_vtest
-#   python3 match.py EXchess_v2026_03_01 EXchess_vtest -n 200 -c 4 -tc 5+0.05
-#   python3 match.py EXchess_v2026_03_01 EXchess_vtest -n 400 --openings ../testing/testsuites/wac.epd
-#   python3 match.py EXchess_vtrain EXchess_vtrain_ro -n 500 -i 10 --wait 500
+#   python3 match.py Epoch_v2026_03_01 Epoch_vtest
+#   python3 match.py Epoch_v2026_03_01 Epoch_vtest -n 200 -c 4 -tc 5+0.05
+#   python3 match.py Epoch_v2026_03_01 Epoch_vtest -n 400 --openings ../testing/testsuites/wac.epd
+#   python3 match.py Epoch_vtrain Epoch_vtrain_ro -n 500 -i 10 --wait 500
 #     (10 sequential 500-game matches; engines restart between iterations so the
 #      read-only engine picks up the latest .tdleaf.bin weights each time)
-#   python3 match.py EXchess_vnew EXchess_v1 EXchess_v2 EXchess_v3 -n 100 --pgn all.pgn
+#   python3 match.py Epoch_vnew Epoch_v1 Epoch_v2 Epoch_v3 -n 100 --pgn all.pgn
 #     (gauntlet: probe engine vs three opponents; all games appended to all.pgn)
 #
 
@@ -97,7 +97,7 @@ def main():
     default_concurrency = max(1, cpu_count // 2)
 
     parser = argparse.ArgumentParser(
-        description="Run a match or gauntlet between EXchess versions via cutechess-cli.",
+        description="Run a match or gauntlet between Epoch versions via cutechess-cli.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("engine1", help="Probe engine (name in run/ or absolute path)")

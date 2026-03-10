@@ -1,5 +1,13 @@
 Changes since 2017_12_24
 
+2026_03_09 -- Project renamed from EXchess to Epoch.
+               src/EXchess.cc → src/Epoch.cc (unity build entry point).
+               comp.pl now produces Epoch_v<vers> binaries.
+               scripts launch_exchess.py → launch_epoch.py,
+               run_exchess.py → run_epoch.py; symlinks in run/ updated.
+               All user-visible strings (xboard feature myname, banners,
+               player names, TDLeaf .nnue description) updated to Epoch.
+
 2026_03_01 to 2026_03_09 -- Major new feature: NNUE evaluation and TDLeaf(λ) online learning.
                New files: src/nnue.h, src/nnue.cpp, src/tdleaf.h, src/tdleaf.cpp.
                Build with: perl comp.pl <vers> NNUE=1  (add TDLEAF=1 for learning).
@@ -30,7 +38,7 @@ NNUE Evaluation (NNUE=1):
                negative inputs.  Correct: square the raw int32 value first, then clamp:
                output = clamp(0, 127, fc0_raw^2 >> 19).  Stockfish-exact.
              -- Unified score formula to (psqt_diff/2 + positional) * 100/5776.
-             -- Match result after all three fixes: v2026_03_07a vs classical = 92W-8D-0L
+             -- Match result after all three fixes: Epoch_v2026_03_07a vs classical = 92W-8D-0L
                (96.0%, 100 games).  NNUE now dominates classical eval despite lower NPS.
 
 TDLeaf(λ) Online Learning (NNUE=1 TDLEAF=1):
@@ -52,7 +60,7 @@ TDLeaf(λ) Online Learning (NNUE=1 TDLEAF=1):
                non-negative l0_in[i] multiplier that breaks cancellation).  Fix: added
                NNUE_FC_BIAS_LR_SCALE = 1000 in tdleaf.h, applied to all three FC bias
                gradient accumulation lines in nnue_accumulate_gradients.
-             -- Concurrent .tdleaf.bin file access: multiple simultaneous EXchess instances
+             -- Concurrent .tdleaf.bin file access: multiple simultaneous Epoch instances
                (e.g. multi-game self-play) can now share a single .tdleaf.bin safely.
                Design: per-session delta accumulators (delta_l0_w/b, delta_l1_w/b,
                delta_l2_w/b, ft_delta_f32, psqt_delta_f32) track weight changes since
@@ -83,12 +91,12 @@ TDLeaf(λ) Online Learning (NNUE=1 TDLEAF=1):
                feature index coverage, FT weight dist (baseline/learned), delta, update counts.
                Page 3 (PSQT): baseline/learned dist, delta dist, per-bucket mean-delta bar.
              -- training_run.py: executables no longer include date in name
-               (EXchess_vtrain_<net> / EXchess_vtrain_<net>_ro); Fischer Random
+               (Epoch_vtrain_<net> / Epoch_vtrain_<net>_ro); Fischer Random
                now defaults to yes.
 
 Infrastructure:
 2026_03_08 -- Cleanup: moved train_commands.txt from run/ to learn/; added
-               run/verify_fc0.py (Python script to verify EXchess FC0 computation
+               run/verify_fc0.py (Python script to verify Epoch FC0 computation
                against raw .nnue file, useful for debugging forward-pass accuracy).
              -- comp.pl: added OVERWRITE flag to skip interactive overwrite prompt.
              -- match.py: added --wait option (passes -wait MS to cutechess-cli); useful

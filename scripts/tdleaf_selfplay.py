@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-tdleaf_selfplay.py — Drive a TDLEAF-enabled EXchess binary in self-play
+tdleaf_selfplay.py — Drive a TDLEAF-enabled Epoch binary in self-play
 or versus a fixed reference engine.
 
 Single-engine self-play (both sides same binary):
-    python3 tdleaf_selfplay.py EXchess_v2026_03_07g_tdleaf -n 200 --depth 6
+    python3 tdleaf_selfplay.py Epoch_v2026_03_07g_tdleaf -n 200 --depth 6
 
 Two-engine mode (training engine vs fixed opponent):
-    python3 tdleaf_selfplay.py EXchess_v2026_03_07g_tdleaf -n 200 --depth 8 \\
-        --engine2 EXchess_vtest --depth2 6
-    python3 tdleaf_selfplay.py EXchess_v2026_03_07g_tdleaf -n 200 --depth 8 \\
-        --engine2 EXchess_v2026_03_07a --tc2 1
+    python3 tdleaf_selfplay.py Epoch_v2026_03_07g_tdleaf -n 200 --depth 8 \\
+        --engine2 Epoch_vtest --depth2 6
+    python3 tdleaf_selfplay.py Epoch_v2026_03_07g_tdleaf -n 200 --depth 8 \\
+        --engine2 Epoch_v2026_03_07a --tc2 1
 
-Engine 1 must be built with NNUE=1 TDLEAF=1.  Engine 2 can be any EXchess binary.
+Engine 1 must be built with NNUE=1 TDLEAF=1.  Engine 2 can be any Epoch binary.
 Scores and wins/losses/draws are always reported from Engine 1's perspective.
 In two-engine mode Engine 1 alternates colors each game so TDLeaf accumulates
 gradients from both White-to-move and Black-to-move positions.
@@ -20,7 +20,7 @@ gradients from both White-to-move and Black-to-move positions.
 Protocol (xboard):
     Per game:  new → st <tc> [→ sd <depth>] → go (white engine only)
     Per move:  on "move <uci>" from active engine → send usermove to the other
-               (EXchess auto-searches after usermove; no explicit 'go' needed)
+               (Epoch auto-searches after usermove; no explicit 'go' needed)
     Game end:  result string detected → send "result" to engine 1 → wait for TDLeaf
 
 Time/depth flags:
@@ -354,7 +354,7 @@ def main():
                     last_progress = now
 
                 if two_engine:
-                    # Inform the passive engine of the move.  EXchess auto-searches
+                    # Inform the passive engine of the move.  Epoch auto-searches
                     # after usermove because p_side!=wtm — sending 'go' here would
                     # trigger a spurious second search with the wrong color.
                     send(passive, f'usermove {move}', args.verbose, passive_tag)

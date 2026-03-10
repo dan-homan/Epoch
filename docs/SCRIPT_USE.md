@@ -1,4 +1,4 @@
-# EXchess Script Reference
+# Epoch Script Reference
 
 All Python scripts live in `scripts/`.  Symlinks in `run/` and `learn/` allow
 them to be invoked in-place from those directories, which is the normal workflow
@@ -8,7 +8,7 @@ since engines, `.nnue` files, and `.tdleaf.bin` files live there.
 
 ## match.py
 
-Run a head-to-head match or gauntlet between EXchess executables using
+Run a head-to-head match or gauntlet between Epoch executables using
 cutechess-cli.  **Invoke from `run/`** (engines and `.nnue` files must be in the
 working directory).
 
@@ -16,14 +16,14 @@ working directory).
 cd run/
 
 # Head-to-head, 200 games
-python3 match.py EXchess_vA EXchess_vB -n 200 -c 4 -tc 5+0.05
+python3 match.py Epoch_vA Epoch_vB -n 200 -c 4 -tc 5+0.05
 
 # Multi-iteration (engines restart between iterations — read-only TDLeaf
 # engine picks up the latest weights at the start of each new match)
-python3 match.py EXchess_vtrain EXchess_vtrain_ro -n 500 -i 10 --wait 500
+python3 match.py Epoch_vtrain Epoch_vtrain_ro -n 500 -i 10 --wait 500
 
 # Gauntlet: probe engine vs multiple opponents; all games appended to one PGN
-python3 match.py EXchess_vnew EXchess_v1 EXchess_v2 EXchess_v3 \
+python3 match.py Epoch_vnew Epoch_v1 Epoch_v2 Epoch_v3 \
     -n 100 --pgn results/gauntlet.pgn
 ```
 
@@ -109,7 +109,7 @@ python3 compare_nnue_learning.py baseline.nnue weights.tdleaf.bin --ft-weights
 
 Debugging tool: recomputes FC0 outputs from a manually specified `l0_in` vector
 and compares against raw weights read directly from the `.nnue` file.  Used to
-verify the EXchess forward pass against the reference network.
+verify the Epoch forward pass against the reference network.
 
 Edit the `L0_IN` dict near the top of the script with values captured from
 `NNUE_DEBUG_VERBOSE=1` output, then run from `run/`:
@@ -121,29 +121,29 @@ python3 verify_fc0.py
 
 ---
 
-## launch_exchess.py
+## launch_epoch.py
 
-Registers an EXchess binary in cutechess's `engines.json` and launches the
+Registers an Epoch binary in cutechess's `engines.json` and launches the
 cutechess GUI.  **Invoke from `run/`**.
 
 ```sh
 cd run/
-python3 launch_exchess.py EXchess_v2026_03_09a
+python3 launch_epoch.py Epoch_v2026_03_09a
 ```
 
-If no executable name is given, defaults to `EXchess`.
+If no executable name is given, defaults to `Epoch`.
 
 ---
 
-## run_exchess.py
+## run_epoch.py
 
-Wrapper that launches an EXchess binary with `run/` as its working directory,
+Wrapper that launches an Epoch binary with `run/` as its working directory,
 ensuring it finds `search.par`, `main_bk.dat`, and the `.nnue` network file.
 Useful as the engine command inside cutechess or other GUIs.
 
 ```sh
 # As engine command in cutechess:
-python3 /path/to/run/run_exchess.py EXchess_v2026_03_09a
+python3 /path/to/run/run_epoch.py Epoch_v2026_03_09a
 ```
 
 ---

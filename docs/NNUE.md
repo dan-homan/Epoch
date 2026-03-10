@@ -1,15 +1,15 @@
-# EXchess NNUE Evaluation — Implementation Notes
+# Epoch NNUE Evaluation — Implementation Notes
 
 ## Overview
 
-EXchess can use a Stockfish-compatible NNUE (Efficiently Updatable Neural Network) for
+Epoch can use a Stockfish-compatible NNUE (Efficiently Updatable Neural Network) for
 position evaluation in place of its classical hand-crafted eval. The implementation
 supports the **HalfKAv2_hm** format used by Stockfish 15/16 era networks.
 
 Build with NNUE enabled:
 
 ```sh
-g++ -o EXchess src/EXchess.cc -O3 -D VERS="dev" -D TABLEBASES=1 -D NNUE=1 -pthread
+g++ -o Epoch src/Epoch.cc -O3 -D VERS="dev" -D TABLEBASES=1 -D NNUE=1 -pthread
 ```
 
 or via the build script:
@@ -42,7 +42,7 @@ back to classical eval automatically.
 
 **King orientation (HalfKAv2_hm):** each perspective horizontally mirrors the board
 when the own king is on the queen side (files a–d), so the king always appears on files
-e–h.  The EXchess convention uses `orient = ((ksq_f & 7) < 4) ? 7 : 0` where `ksq_f`
+e–h.  The Epoch convention uses `orient = ((ksq_f & 7) < 4) ? 7 : 0` where `ksq_f`
 is the king square after rank-flip for the BLACK perspective.
 
 **Own king as feature:** the own king IS included as a feature (PS_KING = 640 slot),
@@ -95,7 +95,7 @@ conversion at store/retrieve: `score_w = wtm ? score : -score`.
 | `src/score.cpp` | Added NNUE branch at top of `score_pos`: score-hash probe/store, dirty-accumulator refresh, `nnue_evaluate` call |
 | `src/search.cpp` | Added accumulator init at search root (with forced dirty=true), copy+update at all three `exec_move` sites, `NNUE_ACC_ARG` at `score_pos` call sites |
 | `src/main.cpp` | Added `nnue_load()` call at startup; fixed `score` command to build a temporary accumulator |
-| `src/EXchess.cc` | Added `#if NNUE #include "nnue.cpp" #endif` to unity build |
+| `src/Epoch.cc` | Added `#if NNUE #include "nnue.cpp" #endif` to unity build |
 
 ---
 

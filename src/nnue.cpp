@@ -1,4 +1,4 @@
-// EXchess NNUE evaluation — HalfKAv2_hm format (Stockfish 15/16 era)
+// Epoch NNUE evaluation — HalfKAv2_hm format (Stockfish 15/16 era)
 // Written from scratch; Stockfish source consulted only for file-format layout.
 //
 // File format confirmed from nn-ad9b42354671.nnue (Stockfish 15.1 exact release):
@@ -440,7 +440,7 @@ static bool write_leb128_i32(FILE *f, const int32_t *buf, size_t count)
 // FT biases, FT weights, and PSQT are written from the current in-memory
 // arrays (reflecting any zeroing or TDLeaf training), encoded as SLEB128.
 // The architecture description is updated:
-//   - Normal (trained): original description + " Trained by EXchess TDLeaf"
+//   - Normal (trained): original description + " Trained by Epoch TDLeaf"
 //   - Zero-initialized: "Random init + basic piece values" (replaces original)
 // ---------------------------------------------------------------------------
 bool nnue_write_nnue(const char *dst_path)
@@ -480,7 +480,7 @@ bool nnue_write_nnue(const char *dst_path)
     if (nnue_zero_initialized || !orig_desc[0])
         snprintf(new_desc, sizeof(new_desc), "Random init + basic piece values");
     else
-        snprintf(new_desc, sizeof(new_desc), "%s Trained by EXchess TDLeaf", orig_desc);
+        snprintf(new_desc, sizeof(new_desc), "%s Trained by Epoch TDLeaf", orig_desc);
     uint32_t new_desc_size = (uint32_t)strlen(new_desc);
 
     nnue_backup_file(dst_path);
@@ -1128,7 +1128,7 @@ static float grad_l2_b[NNUE_LAYER_STACKS];
 
 // Per-session delta accumulators: Σ of gradient changes applied to float shadows since the
 // last file sync.  On write, merged = re_read_file_value + our_delta, which correctly
-// incorporates concurrent updates from other EXchess instances.  Cleared after each sync.
+// incorporates concurrent updates from other Epoch instances.  Cleared after each sync.
 static float delta_l0_w[NNUE_LAYER_STACKS][NNUE_L0_SIZE * NNUE_L0_INPUT];
 static float delta_l0_b[NNUE_LAYER_STACKS][NNUE_L0_SIZE];
 static float delta_l1_w[NNUE_LAYER_STACKS][NNUE_L1_SIZE * NNUE_L1_PADDED];
@@ -1890,7 +1890,7 @@ bool nnue_save_fc_weights(const char *path)
     }
 
     // ---- Re-read the current file and merge our deltas on top ----------
-    // This picks up any changes written by other concurrent EXchess instances
+    // This picks up any changes written by other concurrent Epoch instances
     // since we last synced.  After merge, float shadows = file + our_delta.
     FILE *cur = fopen(path, "rb");
     if (cur) {

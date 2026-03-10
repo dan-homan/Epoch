@@ -1,5 +1,5 @@
-# 
-# Perl script to compile and name console versions of EXchess
+#
+# Perl script to compile and name console versions of Epoch
 # during development
 #
 
@@ -11,7 +11,7 @@ if($ARGV[0]) {
 } else {
     $vers = $date;
 }
-$filename = "EXchess_v" . $vers;
+$filename = "Epoch_v" . $vers;
 
 $extra_arg = "";
 $overwrite = 0;
@@ -48,8 +48,8 @@ if(-e "./$filename" && !$overwrite) {
 $verstring = "\\" . "\"" . $vers . "\\" . "\"";
 
 print "Compiling $filename...\n";
-$compile = "g++ -o $filename ../src/EXchess.cc -O3 -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread";
-#$compile = "g++-mp-11 -o $filename ../src/EXchess.cc -O3 -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread";
+$compile = "g++ -o $filename ../src/Epoch.cc -O3 -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread";
+#$compile = "g++-mp-11 -o $filename ../src/Epoch.cc -O3 -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread";
 print "$compile\n";
 $temp = `$compile`;
 

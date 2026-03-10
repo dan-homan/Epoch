@@ -202,7 +202,7 @@ Version 2 files (FC only) are also still accepted.  A notice is printed in both 
 
 ## Concurrent File Access
 
-Multiple EXchess instances (e.g. several parallel self-play games) can share a single
+Multiple Epoch instances (e.g. several parallel self-play games) can share a single
 `.tdleaf.bin` safely via POSIX file locking and delta-based merging.
 
 ### Design
@@ -260,7 +260,7 @@ contention on the `.tdleaf.bin.lock` file and gives each instance time to comple
 write cycle before the next game starts:
 
 ```sh
-python3 match.py EXchess_vtrain_a EXchess_vtrain_ro -n 200 -c 4 --wait 500
+python3 match.py Epoch_vtrain_a Epoch_vtrain_ro -n 200 -c 4 --wait 500
 ```
 
 ---
@@ -276,7 +276,7 @@ initialised `.nnue` with no source file required:
 
 ```sh
 perl comp.pl init_nnue NNUE=1 TDLEAF=1
-./EXchess_vinit_nnue --init-nnue --write-nnue nn-fresh.nnue
+./Epoch_vinit_nnue --init-nnue --write-nnue nn-fresh.nnue
 ```
 
 This calls `nnue_alloc_arrays()` + `nnue_init_fp32_weights()` + `nnue_init_zero_weights()`
@@ -322,7 +322,7 @@ perl comp.pl train_fresh_ro NNUE=1 NNUE_NET=nn-fresh.nnue TDLEAF=1 TDLEAF_READON
 | `src/main.cpp` — after `ts.search()` | `tdleaf_record_ply()` with root acc + PV |
 | `src/main.cpp` — `game.over = 1` sites | `tdleaf_update_after_game()` |
 | `src/main.cpp` — `new_game` / `setboard` | `td_game.n_plies = 0` |
-| `src/EXchess.cc` | `#if TDLEAF #include "tdleaf.cpp" #endif` |
+| `src/Epoch.cc` | `#if TDLEAF #include "tdleaf.cpp" #endif` |
 | `src/comp.pl` | `TDLEAF=1` flag → `-D TDLEAF=1` |
 
 ---

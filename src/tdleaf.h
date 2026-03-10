@@ -1,4 +1,4 @@
-// EXchess TDLeaf(λ) online learning for the NNUE FC layers.
+// Epoch TDLeaf(λ) online learning for the NNUE FC layers.
 //
 // Algorithm (Baxter, Tridgell & Weaver, 2000):
 //   After a game of T half-moves, let d_t = sigmoid(score_white_t / K).

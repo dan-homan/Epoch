@@ -1,4 +1,4 @@
-# EXchess TODO
+# Epoch TODO
 
 Planned investigations, improvements, and open questions.
 

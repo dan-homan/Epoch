@@ -50,8 +50,8 @@ void build_book(position ipos)
   int r, s;                    
   int count = 0, thresh, LINE_DEPTH; // control variables
   int start_bk = 0, good_move = 1;
-  int EXchess_white = 0;
-  int EXchess_black = 0;
+  int Epoch_white = 0;
+  int Epoch_black = 0;
   int win_white = 0;
   int win_black = 0;
 
@@ -107,11 +107,11 @@ void build_book(position ipos)
     switch(instring[0]) {
      case '[':
        infile.getline(line,99);
-       if(!strncmp(line, " \"EXchess", 9) && !strcmp(instring, "[White")) {
-	 EXchess_white = 1; break;
-       } 
-       if(!strncmp(line, " \"EXchess", 9) && !strcmp(instring, "[Black")) {
-	 EXchess_black = 1; break;
+       if(!strncmp(line, " \"Epoch", 7) && !strcmp(instring, "[White")) {
+	 Epoch_white = 1; break;
+       }
+       if(!strncmp(line, " \"Epoch", 7) && !strcmp(instring, "[Black")) {
+	 Epoch_black = 1; break;
        }
        if(!strncmp(line, " \"1-0", 4) && !strcmp(instring, "[Result")) {
 	 win_white = 1; break;
@@ -120,8 +120,8 @@ void build_book(position ipos)
 	 win_black = 1; break;
        }
        if(!strcmp(instring, "[Event")) {
-	 EXchess_white = 0;
-	 EXchess_black = 0;
+	 Epoch_white = 0;
+	 Epoch_black = 0;
 	 win_white = 0;
 	 win_black = 0;
        }
@@ -129,8 +129,8 @@ void build_book(position ipos)
        break;
      case '#':
        i++; count=0; infile.getline(line,99); temp_pos = ipos; 
-       EXchess_white = 0;
-       EXchess_black = 0;
+       Epoch_white = 0;
+       Epoch_black = 0;
        win_white = 0;
        win_black = 0;
        break;
@@ -173,14 +173,14 @@ void build_book(position ipos)
        if(good_move) {
 	 if(record_place->score < 65535) record_place->score++;
 	 if(record_place->wins < 65535) {
-	   if((EXchess_white && win_white && (temp_pos.wtm^1)) || 
-	      (EXchess_black && win_black && (temp_pos.wtm))) {
+	   if((Epoch_white && win_white && (temp_pos.wtm^1)) || 
+	      (Epoch_black && win_black && (temp_pos.wtm))) {
 	     record_place->wins++;
 	   }
 	 }
 	 if(record_place->losses < 65535) {
-	   if((EXchess_white && win_black && (temp_pos.wtm^1)) || 
-	      (EXchess_black && win_white && (temp_pos.wtm))) {
+	   if((Epoch_white && win_black && (temp_pos.wtm^1)) || 
+	      (Epoch_black && win_white && (temp_pos.wtm))) {
 	     record_place->losses++;
 	   }
 	 }	 
