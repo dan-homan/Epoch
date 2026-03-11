@@ -132,6 +132,60 @@ Infrastructure:
                docs/ created at repo root; holds NNUE.md, TDLEAF.md, TODO.md,
                change_log.txt, license.txt (moved from src/).
 
+2026_03_11 -- Removed TRAIN_EVAL compile flag (dead code from legacy eval training era).
+               All TRAIN_EVAL-guarded blocks removed from score.cpp, search.cpp (qsearch),
+               main.cpp, game_rec.cpp (train_eval and build_fen_list functions deleted),
+               chess.h, and define.h.  No functionality lost; all affected paths had been
+               disabled or superseded by NNUE.
+             -- Added MATERIAL_ONLY compile flag (define.h, score.cpp).
+               When MATERIAL_ONLY=1, score_pos() returns the raw material balance
+               immediately without NNUE or classical eval.  Useful as a training baseline.
+               Build: perl comp.pl <vers> NNUE=1 MATERIAL_ONLY=1
+             -- Fixed Linux GCC warnings: bare fread() calls in nnue.cpp (read_u32 and
+               nnue_write_nnue header-copy block) cast to (void) to suppress
+               -Wunused-result; dummy2[] buffer in support.cpp widened from 2 to 4 bytes
+               to suppress -Wformat-truncation.  Code was functional; warnings only.
+
+2026_03_11 -- TDLeaf horizon noise mitigation: two new mechanisms to reduce the
+               influence of tactics beyond the search horizon on gradient updates.
+
+               Approach 1 — TD error clipping (TDLEAF_SCORE_CLIP_CP = 200 cp):
+               When the white-POV score change between consecutive moves exceeds the
+               threshold, the (d[t+1]-d[t]) contribution to the eligibility trace is
+               scaled down proportionally so the effective change is capped.  Direction
+               of the update is preserved; only the magnitude is reduced.
+
+               Approach 2 — ID score stability weighting (TDLEAF_ID_VAR_SIGMA2 = 10000 cp²):
+               The last TD_ID_HIST=4 iterative-deepening scores are tracked in
+               tree_search::id_scores[]/id_score_count (chess.h, search.cpp).  Their
+               variance is recorded in TDRecord::id_score_variance.  The gradient scale
+               at each ply is multiplied by 1/(1 + variance/TDLEAF_ID_VAR_SIGMA2),
+               down-weighting positions whose score fluctuated across search depths.
+
+               Both approaches active simultaneously by default; each can be disabled by
+               setting its hyperparameter to a very large value.  See docs/TDLEAF.md
+               (Horizon Noise Mitigation section) and docs/TODO.md (ablation plan).
+
+2026_03_11 -- scripts/bayeselo_ratings.py: accept multiple PGN files on the command
+               line; each is fed to BayesElo as a separate readpgn command so all games
+               are combined before rating computation.
+
+             -- scripts/pgn_dedup.py (new): removes duplicate games from one or more
+               PGN files.  Identity is determined by normalising move text (stripping
+               move numbers, comments, NAG annotations, result tokens) and comparing
+               MD5 hashes.  Options: --output FILE, --report (per-duplicate detail +
+               summary to stderr), --players (include White/Black in identity key).
+
+             -- match.py, training_run.py: added per-engine depth limit options
+               (--depth1 N / --depth2 N), passed to cutechess-cli as depth=N in the
+               engine spec.  Useful for handicap matches and controlled-depth training.
+
+             -- docs/TRAINING.md (new): documents the first TDLeaf self-play training
+               run (nn-fresh-260309), test methodology, BayesElo results, and analysis.
+               Tablebases disabled during this run (wrong EGTB_PATH in search.par).
+               Fischer Random starting positions used throughout (no opening book).
+               PSQT initialised to pawn=100cp, knight=bishop=300cp, rook=500cp, queen=900cp.
+
 -------------- old change log below -------------------
 
 Changes since 7.97b
