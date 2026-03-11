@@ -194,11 +194,55 @@ intervals returned by BayesElo.  `Oppo` is the average Elo of opponents faced.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `pgn` | *(required)* | PGN file to analyse |
+| `pgn` | *(required)* | PGN file(s) to analyse (combined before analysis) |
 | `--bayeselo PATH` | `tools/BayesElo/bayeselo` | Path to the bayeselo binary |
 | `--min N` | 0 | Exclude players with fewer than N games |
 | `--advantage` | off | Optimise first-move advantage alongside ratings |
 | `--drawelo` | off | Optimise draw-Elo alongside ratings |
+
+Multiple PGN files can be supplied; BayesElo reads them sequentially and combines all games:
+
+```sh
+python3 scripts/bayeselo_ratings.py learn/pgn/run1.pgn learn/pgn/run2.pgn --min 20
+```
+
+---
+
+## pgn_dedup.py
+
+Remove duplicate games from one or more PGN files.  Two games are considered
+identical when their move sequences match after stripping move numbers, comments,
+NAG annotations, and result tokens.
+
+```sh
+# Deduplicate a single file
+python3 scripts/pgn_dedup.py input.pgn --output deduped.pgn --report
+
+# Combine and deduplicate multiple files
+python3 scripts/pgn_dedup.py run1.pgn run2.pgn run3.pgn --output combined.pgn --report
+```
+
+Example `--report` output (to stderr):
+
+```
+  duplicate game #312 (Epoch_vA vs Epoch_vB) in run2.pgn — matches game #87 in run1.pgn
+
+pgn_dedup: 4500 games read, 4487 written, 13 duplicates removed.
+```
+
+### Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `pgn` | *(required)* | PGN file(s) to process |
+| `--output FILE` | stdout | Write deduplicated games to FILE |
+| `--report` | off | Print per-duplicate details and a summary to stderr |
+| `--players` | off | Include White and Black headers in the identity key |
+
+By default only the move sequence is used for comparison, so games that differ
+only in headers (date, round, event) are treated as duplicates.  With `--players`,
+two games must also have matching `White` and `Black` tags to be considered duplicates
+— useful when the same position was played by different engine pairs.
 
 ---
 
