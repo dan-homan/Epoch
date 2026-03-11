@@ -48,12 +48,17 @@ if(-e "./$filename" && !$overwrite) {
 $verstring = "\\" . "\"" . $vers . "\\" . "\"";
 
 my $native = grep { $_ eq "NATIVE=1" } @ARGV;
-my $arch_flags = $native
+my $os   = `uname -s`; chomp $os;
+my $arch = `uname -m`; chomp $arch;
+my $is_arm = ($arch =~ /^(arm|aarch)/i);
+
+my $arch_flags = ($native || $os eq "Darwin")
     ? "-march=native -mtune=native"
     : "-march=x86-64-v3 -mtune=generic";
+my $x86_flags = $is_arm ? "" : "-mpopcnt";
 
 print "Compiling $filename...\n";
-$compile = "g++ -o $filename ../src/Epoch.cc -O3 $arch_flags -mpopcnt -funroll-loops -ffast-math -flto -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread -Wno-unused-result";
+$compile = "g++ -o $filename ../src/Epoch.cc -O3 $arch_flags $x86_flags -funroll-loops -ffast-math -flto -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread -Wno-unused-result";
 print "$compile\n";
 $temp = `$compile`;
 
