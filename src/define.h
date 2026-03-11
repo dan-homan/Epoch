@@ -85,6 +85,17 @@
  #define TDLEAF_READONLY 0
 #endif
 
+// Epoch-based replay: after each game, run TDLEAF_REPLAY_K additional passes
+// over the last TDLEAF_REPLAY_BUF_N completed games (ring buffer).
+// Score_stm is refreshed from stored accumulators against current weights each
+// pass.  Set TDLEAF_REPLAY_K=0 to disable; preserves exact current behaviour.
+#ifndef TDLEAF_REPLAY_K
+ #define TDLEAF_REPLAY_K    3   // replay passes per game (0 = disabled)
+#endif
+#ifndef TDLEAF_REPLAY_BUF_N
+ #define TDLEAF_REPLAY_BUF_N 8  // ring buffer capacity (~4.5 MB × N static BSS)
+#endif
+
 // define 64 bit integers and zero values for unsigned long long
 #if MSVC 
  #define ZERO 0ui64

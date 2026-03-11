@@ -181,6 +181,13 @@ bool nnue_save_fc_weights(const char *path);
 // Load FC-only weights from companion file, overriding what nnue_load() loaded.
 bool nnue_load_fc_weights(const char *path);
 
+// Evaluate from raw accumulator arrays (used by TDLeaf replay to refresh
+// score_stm from stored acc[][] against current weights, without constructing
+// a full NNUEAccumulator object).
+int nnue_evaluate_acc_raw(const int16_t acc[2][NNUE_HALF_DIMS],
+                           const int32_t psqt[2][NNUE_PSQT_BKTS],
+                           int stm, int piece_count);
+
 #endif // TDLEAF
 
 #endif // NNUE_H

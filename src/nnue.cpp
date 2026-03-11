@@ -2371,4 +2371,20 @@ bool nnue_load_fc_weights(const char *path)
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// nnue_evaluate_acc_raw — evaluate from stored raw arrays (replay score refresh)
+// ---------------------------------------------------------------------------
+int nnue_evaluate_acc_raw(const int16_t acc[2][NNUE_HALF_DIMS],
+                           const int32_t psqt[2][NNUE_PSQT_BKTS],
+                           int stm, int piece_count)
+{
+    NNUEAccumulator tmp;
+    memcpy(tmp.acc[0],  acc[0],  NNUE_HALF_DIMS  * sizeof(int16_t));
+    memcpy(tmp.acc[1],  acc[1],  NNUE_HALF_DIMS  * sizeof(int16_t));
+    memcpy(tmp.psqt[0], psqt[0], NNUE_PSQT_BKTS * sizeof(int32_t));
+    memcpy(tmp.psqt[1], psqt[1], NNUE_PSQT_BKTS * sizeof(int32_t));
+    tmp.computed = true;
+    return nnue_evaluate(tmp, stm, piece_count);
+}
+
 #endif // TDLEAF

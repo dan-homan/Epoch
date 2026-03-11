@@ -118,4 +118,14 @@ void tdleaf_record_ply(TDGameRecord &rec,
 // Calls nnue_apply_gradients(), nnue_requantize_fc(), and nnue_save_fc_weights().
 void tdleaf_update_after_game(TDGameRecord &rec, float result, const char *save_path);
 
+// Runtime-mutable replay pass count (initialised from TDLEAF_REPLAY_K).
+// Can be changed at runtime via setvalue; set to 0 to disable replay.
+extern int tdleaf_replay_k;
+
+// Push the completed game into the replay ring buffer, then run tdleaf_replay_k
+// additional passes over all buffered games with score_stm refreshed from the
+// current weights before each pass.  Must be called after tdleaf_update_after_game().
+// No-op if tdleaf_replay_k == 0.
+void tdleaf_replay(TDGameRecord &rec, float result, const char *save_path);
+
 #endif // TDLEAF_H
