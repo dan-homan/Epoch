@@ -23,6 +23,7 @@ void performance();             // performance test function
 
 /* search.cpp */
 void pc_update(move pcmove, int ply);
+void lmr_init_tables();
 
 /* setup.cpp */
 void set_search_param();

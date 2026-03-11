@@ -46,6 +46,7 @@ Binary naming: `run/Epoch_v<version>` — e.g. `Epoch_v2026_03_09a`, `Epoch_vtra
 | `MATERIAL_ONLY=1` | `score_pos()` returns raw material balance only |
 | `NNUE_NET=<file>` | Override default network file (`nn-ad9b42354671.nnue`) |
 | `OVERWRITE` | Skip overwrite prompt |
+| `NATIVE=1` | Compile with `-march=native -mtune=native` (max perf, non-portable). Default uses `-march=x86-64-v3` (AVX2, portable across Intel Haswell+ and AMD Zen 1+). |
 
 The `.nnue` network file and `.tdleaf.bin` weights file must reside in the same directory as the binary.
 

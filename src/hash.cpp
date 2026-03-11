@@ -30,6 +30,10 @@
 #include "extern.h"
 
 #include <assert.h>
+#include <cstdlib>
+
+// Round n up to the next multiple of 64 for aligned_alloc()
+static inline size_t align64(size_t n) { return (n + 63ULL) & ~63ULL; }
 
 //--------------------------------------------
 // Function to set the hash table size 
@@ -83,7 +87,7 @@ void set_hash_size(unsigned int Mbytes)
 //--------------------------------------------
 void open_hash()
 {
- hash_table = new hash_bucket[TAB_SIZE];
+ hash_table = (hash_bucket*)aligned_alloc(64, align64(TAB_SIZE * sizeof(hash_bucket)));
  // initialize key values in table
  hash_bucket *h;
  for(uintptr_t i = 0; i < TAB_SIZE; i++) {
@@ -96,7 +100,7 @@ void open_hash()
      h->rec[j].hr_data = 0;
    }
  }
- pawn_table = new pawn_rec[PAWN_SIZE];
+ pawn_table = (pawn_rec*)aligned_alloc(64, align64(PAWN_SIZE * sizeof(pawn_rec)));
  pawn_rec *p;
  for(uintptr_t i = 0; i < PAWN_SIZE; i++) {
    p = pawn_table+i;
@@ -111,7 +115,7 @@ void open_hash()
    p->data.passed_b = 0;
    p->data.padding1 = 0;
  }
- score_table = new score_rec[SCORE_SIZE];
+ score_table = (score_rec*)aligned_alloc(64, align64(SCORE_SIZE * sizeof(score_rec)));
  score_rec *s;
  for(uintptr_t i = 0; i < SCORE_SIZE; i++) {
    s = score_table+i;
@@ -121,7 +125,7 @@ void open_hash()
    s->qchecks[1] = 0;
    s->padding1 = 0;
  }
- cmove_table = new cmove_rec[CMOVE_SIZE];
+ cmove_table = (cmove_rec*)aligned_alloc(64, align64(CMOVE_SIZE * sizeof(cmove_rec)));
  cmove_rec *c;
  for(uintptr_t i = 0; i < CMOVE_SIZE; i++) {
    c = cmove_table+i;
@@ -136,6 +140,7 @@ void open_hash()
    c->padding2 = 0;
    c->padding3 = 0;
  }
+ lmr_init_tables();
 }
 
 
@@ -144,10 +149,10 @@ void open_hash()
 //--------------------------------------------
 void close_hash()
 {
- delete [] hash_table;
- delete [] pawn_table;
- delete [] score_table;
- delete [] cmove_table;
+ free(hash_table);
+ free(pawn_table);
+ free(score_table);
+ free(cmove_table);
 }
 
 

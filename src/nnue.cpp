@@ -25,6 +25,11 @@
 #include <arm_neon.h>
 #endif
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#define EPOCH_USE_AVX2 1
+#endif
+
 bool nnue_available = false;
 
 // ---------------------------------------------------------------------------
@@ -311,7 +316,7 @@ bool nnue_load(const char *path)
             int8_t tmp[NNUE_L1_SIZE * NNUE_L1_PADDED];
             if (fread(tmp, sizeof(int8_t), fc1_w, f) != fc1_w)
                 { printf("NNUE: stack %d FC1 weight read failed\n", s); fclose(f); return false; }
-#ifdef __ARM_FEATURE_DOTPROD
+#if defined(__ARM_FEATURE_DOTPROD) || defined(EPOCH_USE_AVX2)
             for (int o = 0; o < NNUE_L1_SIZE; o++) {
                 int ob = o / 4, k = o % 4;
                 for (int i = 0; i < NNUE_L1_PADDED; i++) {
@@ -530,7 +535,7 @@ bool nnue_write_nnue(const char *dst_path)
         // FC1 biases
         fwrite(l1_biases[s], sizeof(int32_t), NNUE_L1_SIZE, dst);
         // FC1 weights: un-reorder back to output-major [o * PADDED + i]
-#ifdef __ARM_FEATURE_DOTPROD
+#if defined(__ARM_FEATURE_DOTPROD) || defined(EPOCH_USE_AVX2)
         for (int o = 0; o < NNUE_L1_SIZE; o++) {
             int ob = o / 4, k = o % 4;
             for (int i = 0; i < NNUE_L1_PADDED; i++) {
@@ -900,6 +905,33 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
             }
         }
     }
+#elif defined(EPOCH_USE_AVX2)
+    {
+        const __m256i zero   = _mm256_setzero_si256();
+        const __m256i max127 = _mm256_set1_epi16(127);
+        for (int p = 0; p < 2; p++) {
+            const int16_t *a = persp_acc[p];
+            int8_t *out = l0_in + p * 512;
+            for (int i = 0; i < 512; i += 32) {
+                __m256i va0 = _mm256_loadu_si256((const __m256i*)(a + i));
+                __m256i vb0 = _mm256_loadu_si256((const __m256i*)(a + i + 512));
+                va0 = _mm256_min_epi16(_mm256_max_epi16(va0, zero), max127);
+                vb0 = _mm256_min_epi16(_mm256_max_epi16(vb0, zero), max127);
+                __m256i prod0 = _mm256_srai_epi16(_mm256_mullo_epi16(va0, vb0), NNUE_SQR_SHIFT);
+
+                __m256i va1 = _mm256_loadu_si256((const __m256i*)(a + i + 16));
+                __m256i vb1 = _mm256_loadu_si256((const __m256i*)(a + i + 512 + 16));
+                va1 = _mm256_min_epi16(_mm256_max_epi16(va1, zero), max127);
+                vb1 = _mm256_min_epi16(_mm256_max_epi16(vb1, zero), max127);
+                __m256i prod1 = _mm256_srai_epi16(_mm256_mullo_epi16(va1, vb1), NNUE_SQR_SHIFT);
+
+                // Pack int16→int8 and fix AVX2 lane interleaving
+                __m256i packed = _mm256_permute4x64_epi64(
+                    _mm256_packs_epi16(prod0, prod1), _MM_SHUFFLE(3,1,2,0));
+                _mm256_storeu_si256((__m256i*)(out + i), packed);
+            }
+        }
+    }
 #else
     for (int p = 0; p < 2; p++) {
         const int16_t *a = persp_acc[p];
@@ -946,6 +978,25 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
         vst1q_s32(fc0_raw + 4,  acc1);
         vst1q_s32(fc0_raw + 8,  acc2);
         vst1q_s32(fc0_raw + 12, acc3);
+#elif defined(EPOCH_USE_AVX2)
+        {
+            // AVX2: process all 16 outputs in two __m256i accumulators (8 int32 each).
+            // Uses maddubs(uint8,int8)+madd idiom to emulate vdotq_s32 on x86.
+            // l0_in values are in [0,127] from SqrCReLU so uint8 interpretation is safe.
+            const __m256i ones = _mm256_set1_epi16(1);
+            __m256i acc0 = _mm256_loadu_si256((const __m256i*)bias);
+            __m256i acc1 = _mm256_loadu_si256((const __m256i*)(bias + 8));
+            for (int ib = 0; ib < NNUE_L0_INPUT / 4; ib++) {
+                __m256i b = _mm256_set1_epi32(*(const int32_t*)(l0_in + ib * 4));
+                const int8_t *wts = wt + ib * 64;
+                acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(b, _mm256_loadu_si256((const __m256i*)wts)), ones));
+                acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(
+                    _mm256_maddubs_epi16(b, _mm256_loadu_si256((const __m256i*)(wts + 32))), ones));
+            }
+            _mm256_storeu_si256((__m256i*)fc0_raw,      acc0);
+            _mm256_storeu_si256((__m256i*)(fc0_raw + 8), acc1);
+        }
 #else
         // Scalar fallback (same vdotq weight layout, computed element-wise).
         for (int o = 0; o < NNUE_L0_SIZE; o++) fc0_raw[o] = bias[o];
@@ -1018,6 +1069,40 @@ int nnue_evaluate(const NNUEAccumulator &acc, int stm, int piece_count)
         int8x8_t b67 = vmovn_s16(vcombine_s16(vmovn_s32(c6), vmovn_s32(c7)));
         vst1q_s8(fc2_in,      vcombine_s8(b01, b23));
         vst1q_s8(fc2_in + 16, vcombine_s8(b45, b67));
+#elif defined(EPOCH_USE_AVX2)
+        {
+            // AVX2: 32 inputs × 32 outputs using vdotq weight layout.
+            // fc1_in values are in [0,127] so uint8 interpretation is safe for maddubs.
+            const __m128i ones = _mm_set1_epi16(1);
+            __m128i a0 = _mm_loadu_si128((const __m128i*)bias);
+            __m128i a1 = _mm_loadu_si128((const __m128i*)(bias + 4));
+            __m128i a2 = _mm_loadu_si128((const __m128i*)(bias + 8));
+            __m128i a3 = _mm_loadu_si128((const __m128i*)(bias + 12));
+            __m128i a4 = _mm_loadu_si128((const __m128i*)(bias + 16));
+            __m128i a5 = _mm_loadu_si128((const __m128i*)(bias + 20));
+            __m128i a6 = _mm_loadu_si128((const __m128i*)(bias + 24));
+            __m128i a7 = _mm_loadu_si128((const __m128i*)(bias + 28));
+            for (int ib = 0; ib < NNUE_L1_PADDED / 4; ib++) {
+                __m128i b = _mm_set1_epi32(*(const int32_t*)(fc1_in + ib * 4));
+                const int8_t *wts = wt + ib * 128;
+#define MADD(acc, off) acc = _mm_add_epi32(acc, _mm_madd_epi16( \
+    _mm_maddubs_epi16(b, _mm_loadu_si128((const __m128i*)(wts + off))), ones))
+                MADD(a0,   0); MADD(a1,  16); MADD(a2,  32); MADD(a3,  48);
+                MADD(a4,  64); MADD(a5,  80); MADD(a6,  96); MADD(a7, 112);
+#undef MADD
+            }
+            // Shift by WEIGHT_SHIFT, clamp to [0,127], narrow int32→int16→int8
+            const __m128i zero128    = _mm_setzero_si128();
+            const __m128i max127_128 = _mm_set1_epi32(127);
+#define SHR6CLAMP(v) _mm_min_epi32(_mm_max_epi32(_mm_srai_epi32(v, NNUE_WEIGHT_SHIFT), zero128), max127_128)
+            a0=SHR6CLAMP(a0); a1=SHR6CLAMP(a1); a2=SHR6CLAMP(a2); a3=SHR6CLAMP(a3);
+            a4=SHR6CLAMP(a4); a5=SHR6CLAMP(a5); a6=SHR6CLAMP(a6); a7=SHR6CLAMP(a7);
+#undef SHR6CLAMP
+            _mm_storeu_si128((__m128i*)fc2_in,
+                _mm_packs_epi16(_mm_packs_epi32(a0, a1), _mm_packs_epi32(a2, a3)));
+            _mm_storeu_si128((__m128i*)(fc2_in + 16),
+                _mm_packs_epi16(_mm_packs_epi32(a4, a5), _mm_packs_epi32(a6, a7)));
+        }
 #else
         for (int o = 0; o < NNUE_L1_SIZE; o++) {
             int32_t sum = bias[o];

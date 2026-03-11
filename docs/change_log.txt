@@ -1,5 +1,43 @@
 Changes since 2017_12_24
 
+2026_03_11 -- x86-64 performance optimizations.
+
+             Build system (src/comp.pl):
+               Added NATIVE=1 flag: compiles with -march=native -mtune=native for
+               maximum performance on the local CPU.  Default build now uses
+               -march=x86-64-v3 (portable AVX2 baseline; Intel Haswell 2013+,
+               AMD Zen 1 2017+) with -mtune=generic.  Both variants add
+               -mpopcnt -funroll-loops -ffast-math -flto -Wno-unused-result.
+               Usage: perl comp.pl <vers> NNUE=1 NATIVE=1
+
+             NNUE AVX2 SIMD (src/nnue.cpp) — resolves "Linux compilation" TODO:
+               Added EPOCH_USE_AVX2 paths alongside existing ARM NEON paths,
+               covering all three hot-path forward-pass kernels:
+               - SqrCReLU (step 1): processes 32 int16/iter via _mm256_mullo_epi16
+                 + _mm256_packs_epi16 (vs 8 for NEON, 1 for scalar).
+               - FC0 dot product (step 2): maddubs+madd idiom emulates vdotq_s32;
+                 all 16 outputs in 2 __m256i accumulators per 4-input block.
+               - FC1 dot product (step 4): SSE4.1 maddubs+madd with 8 __m128i
+                 accumulators matching NEON layout; FC1 weight reordering extended
+                 from __ARM_FEATURE_DOTPROD to also trigger under __AVX2__.
+               Fallback chain: NEON → AVX2 → scalar.
+               EPOCH_USE_AVX2 defined when __AVX2__ is present (enabled by
+               -march=x86-64-v3, -mavx2, or -march=native on AVX2 hardware).
+
+             Hash table cache-line alignment (src/hash.cpp):
+               All four hash table allocations changed from new[]/delete[] to
+               aligned_alloc(64, ...)/free().  hash_bucket is exactly 64 bytes
+               (one x86 cache line); aligned placement eliminates false sharing
+               on multi-threaded hash probes.  align64() helper rounds allocation
+               sizes up to the next 64-byte boundary as required by aligned_alloc.
+
+             LMR precomputed tables (src/search.cpp, src/funct.h):
+               Six inline integer divisions in the LMR reduction logic replaced
+               with lookups into precomputed arrays: lmr_d5[], lmr_d8[],
+               lmr_d12[], lmr_mi8[].  Initialized once at startup via
+               lmr_init_tables() called from open_hash().  No change to
+               reduction amounts or chess logic.
+
 2026_03_09 -- Project renamed from EXchess to Epoch.
                src/EXchess.cc → src/Epoch.cc (unity build entry point).
                comp.pl now produces Epoch_v<vers> binaries.

@@ -30,6 +30,27 @@
 #include "search.h"
 #include "extern.h"
 
+// ---------------------------------------------------------------------------
+// LMR precomputed lookup tables — eliminates repeated integer division inside
+// the move loop.  Indexed by depth (0..MAXD) and move index (0..MAX_MOVES-1).
+// Initialised once at startup by lmr_init_tables() called from open_hash().
+// ---------------------------------------------------------------------------
+static int lmr_d5 [MAXD + 1];     // depth / 5
+static int lmr_d8 [MAXD + 1];     // depth / 8
+static int lmr_d12[MAXD + 1];     // depth / 12
+static int lmr_mi8[MAX_MOVES];    // move_index / 8
+
+void lmr_init_tables()
+{
+    for (int d = 0; d <= MAXD; d++) {
+        lmr_d5 [d] = d / 5;
+        lmr_d8 [d] = d / 8;
+        lmr_d12[d] = d / 12;
+    }
+    for (int m = 0; m < MAX_MOVES; m++)
+        lmr_mi8[m] = m / 8;
+}
+
 #define DEBUG_REDUCTION 0
 
 #if DEBUG_REDUCTION
@@ -901,10 +922,10 @@ void search_node::root_pvs()
      // make another reduction decision based on history or position in move list
      // --> reduce if this move loses historically (~ 90% fail low history)
      //------------------------------------------------------------------
-     if(tdata->history[pos.sq[smove.b.from]][smove.b.to] < -10*(depth)) { 
-       depth_mod -= 1 + (depth/12); 
-       if(tdata->history[pos.sq[smove.b.from]][smove.b.to] < -23*(depth)) { 
-	 depth_mod -= 1 + (depth/8); 
+     if(tdata->history[pos.sq[smove.b.from]][smove.b.to] < -10*(depth)) {
+       depth_mod -= 1 + lmr_d12[depth];
+       if(tdata->history[pos.sq[smove.b.from]][smove.b.to] < -23*(depth)) {
+	 depth_mod -= 1 + lmr_d8[depth];
        }
      }
    }
@@ -1767,19 +1788,19 @@ int search_node::pvs(int alpha, int beta, int depth, int in_pv, int move_to_skip
 	 // try move reduction 
 	 // -----------------------------------
 	 depth_mod -= 1;
-	 if(depth < 5) depth_mod -= int(mi/8);
+	 if(depth < 5) depth_mod -= lmr_mi8[mi];
 	 else {
-	   if(premove_score < alpha-350) depth_mod -= (depth/5);
+	   if(premove_score < alpha-350) depth_mod -= lmr_d5[depth];
 	   //------------------------------------------------------------------
 	   // make another reduction decision based on history or position in move list
 	   // --> reduce if this move loses historically (~ 90% fail low history)
 	   //------------------------------------------------------------------
 	   if(moves.mv[mi].score < -10*depth) {
-	     depth_mod -= 1+(depth/12);
+	     depth_mod -= 1 + lmr_d12[depth];
 	     if(moves.mv[mi].score < -23*depth) {
-	       depth_mod -= 1+(depth/8);
+	       depth_mod -= 1 + lmr_d8[depth];
 	     }
-	   } 
+	   }
 	 }
        }
      }

@@ -111,10 +111,10 @@ Review whether `search.par` is still the right mechanism for runtime configurati
 consider what parameters are still relevant, whether the file format should be updated,
 and how it interacts with xboard/cutechess invocation.
 
-### Linux compilation
-Verify that Epoch compiles and runs correctly on Linux.  The NEON SIMD optimisations
-(`vdotq_s32` etc.) are ARM-specific and will need `#ifdef` guards or x86 fallbacks
-(SSE/AVX via `_mm_dp_epi8` or plain scalar) for x86-64 Linux builds.
+### ~~Linux compilation~~ ✓ RESOLVED (2026-03-11)
+AVX2 x86-64 SIMD paths added to `nnue.cpp` for SqrCReLU, FC0, and FC1.
+Fallback chain is now: NEON (ARM) → AVX2 (x86-64 with `-mavx2`) → scalar.
+Default build uses `-march=x86-64-v3`; use `NATIVE=1` for CPU-native tuning.
 
 ### Multi-thread accumulator correctness
 The SMP search allocates one `ts_thread_data` per thread, each with its own
