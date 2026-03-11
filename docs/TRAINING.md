@@ -1,7 +1,5 @@
 # TDLeaf(λ) Training — Run 1: `nn-fresh-260309`
 
-> **Note:** Testing is still in progress.  Results and observations in this document will be updated once the full test suite is complete.
-
 ## Overview
 
 This documents the first complete TDLeaf(λ) training run on Epoch, carried out on 9 March 2026.  The goal was to train a randomly-initialised NNUE network from scratch via self-play and measure how much strength it gains as a function of game count.
@@ -29,17 +27,17 @@ The network is a statistically plausible but chess-naïve starting point — it 
 | Tablebases | Disabled |
 | Time control | 3+0.05 s/move |
 | Concurrency | 5 simultaneous games |
-| Total training games | 4,000 |
+| Total training games | 8,000 |
 
 The read-only opponent (`_ro`) reloads the latest `.tdleaf.bin` weights at the start of each 500-game training iteration.  This means the learning engine's weights are periodically adopted as the new baseline opponent, providing a gradually strengthening training signal without the instability of per-game opponent updates.
 
-Network snapshots were saved at **500, 1000, 2000, and 4000 games**.
+Network snapshots were saved at **500, 1000, 2000, 4000, and 8000 games**.
 
 ---
 
 ## Testing Procedure
 
-After training, a round-robin test tournament was run among all five network snapshots plus two reference engines, producing `pgn/fresh-260309-testing.pgn`.
+After training, a test tournament was run among all network snapshots plus two reference engines, producing `pgn/fresh-260309-testing.pgn`.
 
 | Parameter | Value |
 |-----------|-------|
@@ -47,7 +45,7 @@ After training, a round-robin test tournament was run among all five network sna
 | Positions | Fischer Random, no opening book |
 | Tablebases | Disabled |
 | Time control | 10+0.1 s/move |
-| Total games | 5,612 |
+| Total games | 6,027 |
 
 **Reference engines:**
 
@@ -64,59 +62,62 @@ Computed with `scripts/bayeselo_ratings.py` (BayesElo, maximum-likelihood).  Rat
 
 | Rank | Engine | Elo | ± | Games | Score | Oppo | Draws |
 |-----:|--------|----:|--:|------:|------:|-----:|------:|
-| 1 | EXchess_classic | +1031 | 213 | 500 | 100% | +66 | 0% |
-| 2 | Epoch_vnn-fresh-260309-4000g | +66 | 17 | 2,612 | 68% | −11 | 10% |
-| 3 | EXchess_classic_material | −8 | 56 | 112 | 40% | +66 | 24% |
-| 4 | Epoch_vnn-fresh-260309-2000g | −79 | 15 | 2,000 | 68% | −236 | 18% |
-| 5 | Epoch_vnn-fresh-260309-1000g | −219 | 15 | 2,000 | 48% | −201 | 20% |
-| 6 | Epoch_vnn-fresh-260309-500g | −324 | 15 | 2,000 | 33% | −175 | 19% |
-| 7 | Epoch_vnn-fresh-260309 (0g) | −467 | 18 | 2,000 | 16% | −139 | 12% |
+| 1 | EXchess_classic | +1054 | 152 | 1,000 | 100% | +76 | 0% |
+| 2 | Epoch_vnn-fresh-260309-8000g | +135 | 14 | 3,500 | 71% | −19 | 11% |
+| 3 | EXchess_classic_material | +40 | 19 | 1,000 | 45% | +76 | 22% |
+| 4 | Epoch_vnn-fresh-260309-4000g | +18 | 15 | 3,027 | 59% | +19 | 12% |
+| 5 | Epoch_vnn-fresh-260309-2000g | −139 | 31 | 527 | 17% | +129 | 17% |
+| 6 | Epoch_vnn-fresh-260309-1000g | −271 | 26 | 1,000 | 12% | +76 | 11% |
+| 7 | Epoch_vnn-fresh-260309-500g | −353 | 32 | 1,000 | 8% | +76 | 7% |
+| 8 | Epoch_vnn-fresh-260309 (0g) | −484 | 44 | 1,000 | 4% | +76 | 3% |
 
 ### Progress by Game Count
 
-| Snapshot | Elo | Gain vs previous |
-|----------|----:|-----------------:|
-| 0g (fresh init) | −467 | — |
-| 500g | −324 | +143 |
-| 1000g | −219 | +105 |
-| 2000g | −79 | +140 |
-| 4000g | +66 | +145 |
-| **Total gain** | | **+533** |
+| Snapshot | Elo | Gain vs previous | Elo/game |
+|----------|----:|-----------------:|---------:|
+| 0g (fresh init) | −484 | — | — |
+| 500g | −353 | +131 | 0.26 |
+| 1000g | −271 | +82 | 0.16 |
+| 2000g | −139 | +132 | 0.13 |
+| 4000g | +18 | +157 | 0.08 |
+| 8000g | +135 | +117 | 0.03 |
+| **Total gain** | | **+619** | |
 
-Improvement is roughly linear in game count over this range, with no sign of plateau at 4000 games.
+The rate of improvement is declining with game count, falling from ~0.26 Elo/game early to ~0.03 Elo/game between 4000 and 8000 games.  Improvement is still positive at 8000 games, however.
 
-### Key Pairwise Results (4000g network)
+### Key Pairwise Results (8000g network)
 
-| White | Black | W | D | L | Score |
-|-------|-------|--:|--:|--:|------:|
-| 4000g | 0g (fresh) | 225 | 10 | 15 | 92.0% |
-| 4000g | 500g | 214 | 26 | 10 | 90.8% |
-| 4000g | 1000g | 195 | 33 | 22 | 84.6% |
-| 4000g | 2000g | 141 | 64 | 45 | 69.2% |
-| 4000g | EXchess_classic_material | 43 | 19 | 40 | 51.5% |
-| EXchess_classic | 4000g | 250 | 0 | 1 | 100.0% |
+| Opponent | W | D | L | Score |
+|----------|--:|--:|--:|------:|
+| Epoch_vnn-fresh-260309 (0g) | 479 | 9 | 12 | 96.7% |
+| Epoch_vnn-fresh-260309-500g | 446 | 34 | 20 | 92.6% |
+| Epoch_vnn-fresh-260309-1000g | 447 | 33 | 20 | 92.7% |
+| Epoch_vnn-fresh-260309-2000g | 380 | 77 | 43 | 83.7% |
+| Epoch_vnn-fresh-260309-4000g | 295 | 107 | 98 | 69.7% |
+| EXchess_classic_material | 246 | 113 | 141 | 60.5% |
+| EXchess_classic | 1 | 1 | 498 | 0.3% |
 
-The 4000g network is approximately equal to the material-only classical eval and has a large positive score against all earlier snapshots.  It remains far below the classical eval — `EXchess_classic` loses only a single game in 500 against the 4000g network.
+The 8000g network is competitive with the material-only classical eval (60.5% score) and dominates all earlier snapshots.  It remains far below the classical eval — losing 498 of 500 games against `EXchess_classic`.
 
 ---
 
 ## Observations
 
-1. **Consistent monotonic improvement.** Every snapshot is stronger than the last, and the per-500-game Elo gain is stable (~100–145 Elo), suggesting learning is still far from saturation at 4000 games.
+1. **Monotonic improvement, but decelerating.**  Every snapshot is stronger than the last, but the Elo gain per game drops sharply: from ~0.26 at the start to ~0.03 between 4000 and 8000 games.  The network is still improving at 8000 games but may be approaching a ceiling under the current training conditions (3+0.05 TC, Fischer Random, no hyperparameter tuning).
 
-2. **Crossing the material-only threshold.** At roughly 2000–4000 games the network surpasses a pure material eval, meaning it has begun to learn meaningful positional patterns from self-play.
+2. **Crossing the material-only threshold.**  Between 4000 and 8000 games the network surpasses a pure material eval (8000g scores 60.5% vs `EXchess_classic_material`), meaning it has learned meaningful positional patterns from self-play.
 
-3. **Large gap to classical eval.** The 4000g net is ~965 Elo below `EXchess_classic` in this pool.  This is expected: the classical eval encodes decades of chess knowledge; a self-trained network at this game count is not expected to match it.  Closing this gap is the long-term goal.
+3. **Large gap to classical eval.**  The 8000g net is ~919 Elo below `EXchess_classic` in this pool.  This is expected: the classical eval encodes decades of chess knowledge; a self-trained network at this game count is not expected to match it.  Closing this gap is the long-term goal.
 
-4. **Fischer Random as training distribution.** Using random starting positions removes opening-book effects and ensures the network is exposed to a wide variety of piece configurations from move 1.  It is not yet known whether a network trained on Fischer Random positions will transfer well to standard chess, or whether standard starting-position training would be faster.
+4. **Fischer Random as training distribution.**  Using random starting positions removes opening-book effects and ensures the network is exposed to a wide variety of piece configurations from move 1.  It is not yet known whether a network trained on Fischer Random positions will transfer well to standard chess.
 
-5. **Draw rate increases with strength.** The fresh network draws only 12% of games (often simply losing); the 4000g network draws 10% overall but up to 24% against classical-material.  This is qualitatively consistent with a stronger evaluation keeping games competitive longer.
+5. **Draw rate increases with strength.**  The fresh network draws only 3% of games (mostly losing); the 8000g network draws 11% overall.  This is qualitatively consistent with a stronger evaluation keeping games competitive longer.
 
 ---
 
 ## Next Steps
 
-- Continue training beyond 4000 games on the same network to assess the rate of continued improvement.
+- Continue training beyond 8000 games to assess whether improvement continues or plateaus.
 - Run a test match against standard-chess opponents (not Fischer Random) to check transferability.
 - Investigate learning-rate tuning, particularly for PSQT, which appears to learn slowly (see `docs/TODO.md`).
 - Consider a training run starting from the SF15.1 network (`nn-ad9b42354671.nnue`) rather than a fresh initialisation, as a comparison.
