@@ -687,6 +687,10 @@ def plot_ft_overview(orig, upd, ft_data, save):
     ax_top = fig.add_subplot(gs_inner0[0])
     fb      = ft_data['ft_bias'].astype(np.int32)
     bmax    = max(abs(int(fb.min())), abs(int(fb.max())), 1)
+    # Widen range to cover learned values so neither panel clips outliers
+    if 'ft_bias_learned' in upd:
+        fb_learned = upd['ft_bias_learned'].astype(np.float32)
+        bmax = max(bmax, abs(float(fb_learned.min())), abs(float(fb_learned.max())))
     b_bins  = np.linspace(-bmax * 1.05, bmax * 1.05, 80)
     ax_top.hist(fb, bins=b_bins, color='steelblue', alpha=0.75, density=True)
     ax_top.set_title('FT biases (1024 int16)', fontsize=9, fontweight='bold')
@@ -697,7 +701,6 @@ def plot_ft_overview(orig, upd, ft_data, save):
 
     ax_bot = fig.add_subplot(gs_inner0[1], sharex=ax_top)
     if 'ft_bias_learned' in upd:
-        fb_learned = upd['ft_bias_learned'].astype(np.float32)
         ax_bot.hist(fb_learned, bins=b_bins, color='lightcoral', alpha=0.75, density=True)
         ax_bot.text(0.98, 0.90, tdleaf_name, transform=ax_bot.transAxes,
                     fontsize=7, ha='right', va='top', color='firebrick')
