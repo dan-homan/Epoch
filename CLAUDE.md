@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Epoch is a C++ chess engine (GPL v3) by Daniel C. Homan, originally developed as EXchess (1997–2017).
+Leaf is a C++ chess engine (GPL v3) by Daniel C. Homan, originally developed as EXchess (1997–2017).
 The 2026 restart adds NNUE evaluation (Stockfish 15.1–compatible HalfKAv2_hm architecture) and
 TDLeaf(λ) online learning from self-play.  xboard/CECP protocol; no UCI.
 
@@ -14,7 +14,7 @@ TDLeaf(λ) online learning from self-play.  xboard/CECP protocol; no UCI.
 
 ## Build System
 
-Compilation is managed by `src/comp.pl`.  The build uses a **unity build** pattern: `src/Epoch.cc`
+Compilation is managed by `src/comp.pl`.  The build uses a **unity build** pattern: `src/Leaf.cc`
 includes every other `.cpp` file as a single translation unit.  Binaries land in `run/`.
 
 ```sh
@@ -34,7 +34,7 @@ perl src/comp.pl <version> NNUE=1 TDLEAF=1 TDLEAF_READONLY=1
 perl src/comp.pl <version> NNUE=1 OVERWRITE
 ```
 
-Binary naming: `run/Epoch_v<version>` — e.g. `Epoch_v2026_03_09a`, `Epoch_vtrain_nn-fresh`.
+Binary naming: `run/Leaf_v<version>` — e.g. `Leaf_v2026_03_09a`, `Leaf_vtrain_nn-fresh`.
 
 ### Key compile flags
 
@@ -54,7 +54,7 @@ The `.nnue` network file and `.tdleaf.bin` weights file must reside in the same 
 
 ## Architecture
 
-### Unity build (`src/Epoch.cc` include order)
+### Unity build (`src/Leaf.cc` include order)
 
 `main.cpp` → `attacks.cpp` → `exmove.cpp` → `swap.cpp` → `moves.cpp` → `captures.cpp` →
 `captchecks.cpp` → `hash.cpp` → `smp.cpp` → `search.cpp` → `score.cpp` →
@@ -110,7 +110,7 @@ See `docs/SCRIPT_USE.md` for full option tables.
 
 ```sh
 # Run a match (from run/)
-python3 scripts/match.py Epoch_vA Epoch_vB -n 200 -c 4 -tc 5+0.05
+python3 scripts/match.py Leaf_vA Leaf_vB -n 200 -c 4 -tc 5+0.05
 
 # Interactive training run (from learn/)
 python3 scripts/training_run.py
@@ -130,14 +130,14 @@ python3 scripts/compare_nnue_learning.py learn/nn-fresh.nnue learn/nn-fresh.tdle
 ```sh
 # 1. Initialise a fresh random network (optional)
 perl src/comp.pl init_nnue NNUE=1 TDLEAF=1 OVERWRITE
-./run/Epoch_vinit_nnue --init-nnue --write-nnue learn/nn-fresh.nnue
+./run/Leaf_vinit_nnue --init-nnue --write-nnue learn/nn-fresh.nnue
 
 # 2. Build training binaries
 perl src/comp.pl train_fresh NNUE=1 NNUE_NET=learn/nn-fresh.nnue TDLEAF=1 OVERWRITE
 perl src/comp.pl train_fresh_ro NNUE=1 NNUE_NET=learn/nn-fresh.nnue TDLEAF=1 TDLEAF_READONLY=1 OVERWRITE
 
 # 3. Run training matches (from learn/)
-python3 match.py Epoch_vtrain_fresh Epoch_vtrain_fresh_ro -c 5 -tc 0:03+0.05 --wait 500 -n 500
+python3 match.py Leaf_vtrain_fresh Leaf_vtrain_fresh_ro -c 5 -tc 0:03+0.05 --wait 500 -n 500
 ```
 
 ---
@@ -145,7 +145,7 @@ python3 match.py Epoch_vtrain_fresh Epoch_vtrain_fresh_ro -c 5 -tc 0:03+0.05 --w
 ## Directory Layout
 
 ```
-src/          Source code (unity-built via Epoch.cc)
+src/          Source code (unity-built via Leaf.cc)
 docs/         Documentation (NNUE.md, TDLEAF.md, TODO.md, TRAINING.md, SCRIPT_USE.md, change_log.txt)
 scripts/      Python automation scripts
 run/          Compiled binaries + runtime config (search.par, opening book)

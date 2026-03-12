@@ -1,5 +1,5 @@
 #
-# Perl script to compile and name console versions of Epoch
+# Perl script to compile and name console versions of Leaf
 # during development
 #
 
@@ -11,7 +11,7 @@ if($ARGV[0]) {
 } else {
     $vers = $date;
 }
-$filename = "Epoch_v" . $vers;
+$filename = "Leaf_v" . $vers;
 
 $extra_arg = "";
 $overwrite = 0;
@@ -58,7 +58,7 @@ my $arch_flags = ($native || $os eq "Darwin")
 my $x86_flags = $is_arm ? "" : "-mpopcnt";
 
 print "Compiling $filename...\n";
-$compile = "g++ -o $filename ../src/Epoch.cc -O3 $arch_flags $x86_flags -funroll-loops -ffast-math -flto -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread -Wno-unused-result";
+$compile = "g++ -o $filename ../src/Leaf.cc -O3 $arch_flags $x86_flags -funroll-loops -ffast-math -flto -D VERS=$verstring -D TABLEBASES=1 $extra_arg -pthread -Wno-unused-result";
 print "$compile\n";
 $temp = `$compile`;
 

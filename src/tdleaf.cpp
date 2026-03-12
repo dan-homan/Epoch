@@ -1,5 +1,5 @@
-// Epoch TDLeaf(λ) online learning — implementation
-// Compiled only when TDLEAF=1 (included by Epoch.cc after nnue.cpp).
+// Leaf TDLeaf(λ) online learning — implementation
+// Compiled only when TDLEAF=1 (included by Leaf.cc after nnue.cpp).
 
 #include "define.h"
 

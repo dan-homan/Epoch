@@ -1,4 +1,4 @@
-# Epoch Script Reference
+# Leaf Script Reference
 
 All Python scripts live in `scripts/`.  Symlinks in `run/` and `learn/` allow
 them to be invoked in-place from those directories, which is the normal workflow
@@ -8,7 +8,7 @@ since engines, `.nnue` files, and `.tdleaf.bin` files live there.
 
 ## match.py
 
-Run a head-to-head match or gauntlet between Epoch executables using
+Run a head-to-head match or gauntlet between Leaf executables using
 cutechess-cli.  **Invoke from `run/`** (engines and `.nnue` files must be in the
 working directory).
 
@@ -16,14 +16,14 @@ working directory).
 cd run/
 
 # Head-to-head, 200 games
-python3 match.py Epoch_vA Epoch_vB -n 200 -c 4 -tc 5+0.05
+python3 match.py Leaf_vA Leaf_vB -n 200 -c 4 -tc 5+0.05
 
 # Multi-iteration (engines restart between iterations — read-only TDLeaf
 # engine picks up the latest weights at the start of each new match)
-python3 match.py Epoch_vtrain Epoch_vtrain_ro -n 500 -i 10 --wait 500
+python3 match.py Leaf_vtrain Leaf_vtrain_ro -n 500 -i 10 --wait 500
 
 # Gauntlet: probe engine vs multiple opponents; all games appended to one PGN
-python3 match.py Epoch_vnew Epoch_v1 Epoch_v2 Epoch_v3 \
+python3 match.py Leaf_vnew Leaf_v1 Leaf_v2 Leaf_v3 \
     -n 100 --pgn results/gauntlet.pgn
 ```
 
@@ -111,7 +111,7 @@ python3 compare_nnue_learning.py baseline.nnue weights.tdleaf.bin --ft-weights
 
 Debugging tool: recomputes FC0 outputs from a manually specified `l0_in` vector
 and compares against raw weights read directly from the `.nnue` file.  Used to
-verify the Epoch forward pass against the reference network.
+verify the Leaf forward pass against the reference network.
 
 Edit the `L0_IN` dict near the top of the script with values captured from
 `NNUE_DEBUG_VERBOSE=1` output, then run from `run/`:
@@ -125,27 +125,27 @@ python3 verify_fc0.py
 
 ## launch_epoch.py
 
-Registers an Epoch binary in cutechess's `engines.json` and launches the
+Registers an Leaf binary in cutechess's `engines.json` and launches the
 cutechess GUI.  **Invoke from `run/`**.
 
 ```sh
 cd run/
-python3 launch_epoch.py Epoch_v2026_03_09a
+python3 launch_epoch.py Leaf_v2026_03_09a
 ```
 
-If no executable name is given, defaults to `Epoch`.
+If no executable name is given, defaults to `Leaf`.
 
 ---
 
 ## run_epoch.py
 
-Wrapper that launches an Epoch binary with `run/` as its working directory,
+Wrapper that launches an Leaf binary with `run/` as its working directory,
 ensuring it finds `search.par`, `main_bk.dat`, and the `.nnue` network file.
 Useful as the engine command inside cutechess or other GUIs.
 
 ```sh
 # As engine command in cutechess:
-python3 /path/to/run/run_epoch.py Epoch_v2026_03_09a
+python3 /path/to/run/run_epoch.py Leaf_v2026_03_09a
 ```
 
 ---
@@ -178,12 +178,12 @@ Bayesian Elo ratings — fresh-260309-testing.pgn
 Rank  Name                            Elo     ±  Games   Score   Oppo  Draws
 ----------------------------------------------------------------------------
    1  EXchess_classic             +1031   213    500    100%    +66     0%
-   2  Epoch_vnn-fresh-260309-4000g    +66    17   2612     68%    -11    10%
+   2  Leaf_vnn-fresh-260309-4000g    +66    17   2612     68%    -11    10%
    3  EXchess_classic_material         -8    56    112     40%    +66    24%
-   4  Epoch_vnn-fresh-260309-2000g    -79    15   2000     68%   -236    18%
-   5  Epoch_vnn-fresh-260309-1000g   -219    15   2000     48%   -201    20%
-   6  Epoch_vnn-fresh-260309-500g    -324    15   2000     33%   -175    19%
-   7  Epoch_vnn-fresh-260309         -467    18   2000     16%   -139    12%
+   4  Leaf_vnn-fresh-260309-2000g    -79    15   2000     68%   -236    18%
+   5  Leaf_vnn-fresh-260309-1000g   -219    15   2000     48%   -201    20%
+   6  Leaf_vnn-fresh-260309-500g    -324    15   2000     33%   -175    19%
+   7  Leaf_vnn-fresh-260309         -467    18   2000     16%   -139    12%
 ```
 
 Ratings are relative (zero-sum); absolute scale depends on which players are
@@ -225,7 +225,7 @@ python3 scripts/pgn_dedup.py run1.pgn run2.pgn run3.pgn --output combined.pgn --
 Example `--report` output (to stderr):
 
 ```
-  duplicate game #312 (Epoch_vA vs Epoch_vB) in run2.pgn — matches game #87 in run1.pgn
+  duplicate game #312 (Leaf_vA vs Leaf_vB) in run2.pgn — matches game #87 in run1.pgn
 
 pgn_dedup: 4500 games read, 4487 written, 13 duplicates removed.
 ```

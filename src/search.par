@@ -1,13 +1,13 @@
-# This file contains the search and learning paramaters for Epoch.
+# This file contains the search and learning paramaters for Leaf.
 #
-# You are welcome to change these parameters to modify Epoch'
+# You are welcome to change these parameters to modify Leaf'
 # style of play.  The default values are the best I've found
 # so far. 
 #
-# Epoch will look for this file in the same directory as the
+# Leaf will look for this file in the same directory as the
 # executable.  (Under normal circumstances it will be there)
 #
-# If this file is not found by Epoch, the default (pre-programmed)
+# If this file is not found by Leaf, the default (pre-programmed)
 # parameters will be used.
 #
 
@@ -18,7 +18,7 @@
 HASH              256  # in megabytes (minimum is 16)
 
 # For some programs using the xboard protocol, set XBOARD to 1
-# This will make Epoch start in xboard mode, rather than waiting
+# This will make Leaf start in xboard mode, rather than waiting
 # for the "xboard" command from the host program.  Only use this
 # if necessary
 
@@ -34,7 +34,7 @@ THREADS              1    # number of processors to use, this may be changed
 
 # Endgame Tablebases - if you have them installed
 
-EGTB_PATH            /Users/danielhoman/Epoch/TB
+EGTB_PATH            /Users/danielhoman/Leaf/TB
 EGTB_CACHE_SIZE    8.0     # Tablebase cache size in megabytes
 
 # Log File

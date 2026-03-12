@@ -1,4 +1,4 @@
-// Epoch TDLeaf(λ) online learning for the NNUE FC layers.
+// Leaf TDLeaf(λ) online learning for the NNUE FC layers.
 //
 // Algorithm (Baxter, Tridgell & Weaver, 2000):
 //   After a game of T half-moves, let d_t = sigmoid(score_white_t / K).
@@ -26,9 +26,6 @@
 // ---------------------------------------------------------------------------
 static const float TDLEAF_LAMBDA          = 0.7f;   // eligibility trace decay
 static const float TDLEAF_ALPHA           = 200.0f;  // learning rate for FC layers
-// FT learning rate — much smaller than FC because FT weights are int16 (256× finer
-// than int8) and are shared across all positions.
-static const float TDLEAF_ALPHA_FT        = 200.0f; // learning rate for FT weights
 // FT learning rate scale applied inside nnue_accumulate_gradients to g_acc[p][d].
 static const float NNUE_FT_LR_SCALE = 1.000f;
 // PSQT learning rate scale applied inside nnue_accumulate_gradients to g_psqt_diff.

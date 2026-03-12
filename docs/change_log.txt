@@ -56,12 +56,12 @@ Changes since 2017_12_24
                docs/TRAINING.md (new): first TDLeaf training run results and analysis.
 
 2026_03_09 -- Project renamed from EXchess to Epoch.
-               src/EXchess.cc → src/Epoch.cc (unity build entry point).
-               comp.pl now produces Epoch_v<vers> binaries.
+               src/EXchess.cc → src/Leaf.cc (unity build entry point).
+               comp.pl now produces Leaf_v<vers> binaries.
                scripts launch_exchess.py → launch_epoch.py,
                run_exchess.py → run_epoch.py; symlinks in run/ updated.
                All user-visible strings (xboard feature myname, banners,
-               player names, TDLeaf .nnue description) updated to Epoch.
+               player names, TDLeaf .nnue description) updated to Leaf.
              -- FT bias training added (v4 .tdleaf.bin format).
                FT biases (1024 int16) now have float shadow, gradient accumulator,
                update counts, and per-session delta.  NNUE_FT_BIAS_LR_SCALE = 10.0.
@@ -107,7 +107,7 @@ NNUE Evaluation (NNUE=1):
                negative inputs.  Correct: square the raw int32 value first, then clamp:
                output = clamp(0, 127, fc0_raw^2 >> 19).  Stockfish-exact.
              -- Unified score formula to (psqt_diff/2 + positional) * 100/5776.
-             -- Match result after all three fixes: Epoch_v2026_03_07a vs classical = 92W-8D-0L
+             -- Match result after all three fixes: Leaf_v2026_03_07a vs classical = 92W-8D-0L
                (96.0%, 100 games).  NNUE now dominates classical eval despite lower NPS.
 
 TDLeaf(λ) Online Learning (NNUE=1 TDLEAF=1):
@@ -129,7 +129,7 @@ TDLeaf(λ) Online Learning (NNUE=1 TDLEAF=1):
                non-negative l0_in[i] multiplier that breaks cancellation).  Fix: added
                NNUE_FC_BIAS_LR_SCALE = 1000 in tdleaf.h, applied to all three FC bias
                gradient accumulation lines in nnue_accumulate_gradients.
-             -- Concurrent .tdleaf.bin file access: multiple simultaneous Epoch instances
+             -- Concurrent .tdleaf.bin file access: multiple simultaneous Leaf instances
                can now share a single .tdleaf.bin safely via POSIX file locking and
                delta-based merging.  Lock file: .tdleaf.bin.lock.  Atomic rename on write.
              -- Added --init-nnue --write-nnue mode: creates a randomly initialised .nnue

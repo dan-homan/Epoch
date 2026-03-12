@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Epoch TDLeaf(λ) training run manager.
+# Leaf TDLeaf(λ) training run manager.
 # Run from any directory; paths are resolved relative to this script.
 #
 #   python3 training_run.py
@@ -76,8 +76,8 @@ def build_binary(version, flags):
     result = subprocess.run(cmd, cwd=run_dir)
     if result.returncode != 0:
         return False
-    built = os.path.join(run_dir, f"Epoch_v{version}")
-    dest  = os.path.join(learn_dir, f"Epoch_v{version}")
+    built = os.path.join(run_dir, f"Leaf_v{version}")
+    dest  = os.path.join(learn_dir, f"Leaf_v{version}")
     if os.path.isfile(built):
         shutil.move(built, dest)
     return os.path.isfile(dest)
@@ -94,7 +94,7 @@ def main():
 
     print()
     print("=" * 62)
-    print("  Epoch TDLeaf(λ) Training Run")
+    print("  Leaf TDLeaf(λ) Training Run")
     print("=" * 62)
 
     # -----------------------------------------------------------------------
@@ -139,8 +139,8 @@ def main():
     print("Building executables:")
     train_ver = f"train_{net_base}"
     ro_ver    = f"train_{net_base}_ro"
-    train_exe = os.path.join(learn_dir, f"Epoch_v{train_ver}")
-    ro_exe    = os.path.join(learn_dir, f"Epoch_v{ro_ver}")
+    train_exe = os.path.join(learn_dir, f"Leaf_v{train_ver}")
+    ro_exe    = os.path.join(learn_dir, f"Leaf_v{ro_ver}")
     nnue_flag = f"NNUE_NET={net_filename}"
 
     rebuild = True
@@ -148,11 +148,11 @@ def main():
         rebuild = ask_yes_no("  Both executables already exist.  Rebuild?", default="n")
 
     if rebuild:
-        print(f"  Building training binary  (Epoch_v{train_ver}) ...")
+        print(f"  Building training binary  (Leaf_v{train_ver}) ...")
         if not build_binary(train_ver, ["NNUE=1", "TDLEAF=1", nnue_flag]):
             print("  Build failed.", file=sys.stderr)
             sys.exit(1)
-        print(f"  Building read-only binary (Epoch_v{ro_ver}) ...")
+        print(f"  Building read-only binary (Leaf_v{ro_ver}) ...")
         if not build_binary(ro_ver, ["NNUE=1", "TDLEAF=1", "TDLEAF_READONLY=1", nnue_flag]):
             print("  Build failed.", file=sys.stderr)
             sys.exit(1)
@@ -240,8 +240,8 @@ def main():
     print()
     print("=" * 62)
     print(f"  Net in:           {net_filename}")
-    print(f"  Training binary:  Epoch_v{train_ver}")
-    print(f"  Read-only binary: Epoch_v{ro_ver}")
+    print(f"  Training binary:  Leaf_v{train_ver}")
+    print(f"  Read-only binary: Leaf_v{ro_ver}")
     print(f"  Games this run:   {total_new:,}  ({n_iters} iter × {n_games} games)")
     print(f"  Prior games:      {prior_games:,}")
     print(f"  Total after run:  {total_after:,}")

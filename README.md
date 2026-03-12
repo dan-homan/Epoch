@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="logos/epoch.svg" alt="Epoch Chess Engine" width="500"/>
+  <img src="logos/epoch.svg" alt="Leaf Chess Engine" width="500"/>
 </p>
 
-# Epoch
+# Leaf
 
 **Epoch** is an open-source chess engine written in C++ by Daniel C. Homan, an astrophysicist at Denison University in Granville, Ohio.  Originally developed under the name **EXchess**, development began in the late 1990s and the engine was actively maintained and released through early 2017.  After a long hiatus, the project was restarted in 2026 with significant new features developed in collaboration with [Claude Code](https://claude.ai/claude-code) (Anthropic) and renamed to Epoch.
 
@@ -32,18 +32,18 @@ This work was developed interactively with [Claude Code](https://claude.ai/claud
 
 ### NNUE Evaluation
 
-Epoch supports **HalfKAv2_hm** NNUE evaluation compatible with Stockfish 15.1 era networks.  Build with `NNUE=1`.
+Leaf supports **HalfKAv2_hm** NNUE evaluation compatible with Stockfish 15.1 era networks.  Build with `NNUE=1`.
 
 The current default network file, **`nn-ad9b42354671.nnue`** is the original Stockfish 15.1 release network and serves three distinct purposes in the project:
 
 **1. Implementation correctness anchor.**
-Because this is the exact network shipped with Stockfish 15.1, Epoch's forward pass can be validated against the Stockfish 15.1 source line by line.  Any discrepancy in evaluation of a given position is a bug in Epoch, not an approximation.  This property was used extensively during development: several significant bugs were isolated and fixed by comparing Epoch evaluation against Stockfish on the same position, including an incorrect feature index for the own king, a wrong SqrCReLU formulation that zeroed all negative pre-activations, and an incorrect PSQT scale factor.  After all fixes, Epoch matches Stockfish 15.1 evaluation exactly (within 1 cp rounding) on every tested position.
+Because this is the exact network shipped with Stockfish 15.1, Leaf's forward pass can be validated against the Stockfish 15.1 source line by line.  Any discrepancy in evaluation of a given position is a bug in Leaf, not an approximation.  This property was used extensively during development: several significant bugs were isolated and fixed by comparing Leaf evaluation against Stockfish on the same position, including an incorrect feature index for the own king, a wrong SqrCReLU formulation that zeroed all negative pre-activations, and an incorrect PSQT scale factor.  After all fixes, Leaf matches Stockfish 15.1 evaluation exactly (within 1 cp rounding) on every tested position.
 
 **2. Playing-strength baseline.**
-A network trained from scratch by Epoch itself (via TDLeaf(λ) self-play) will initially be weaker than `nn-ad9b42354671.nnue`, which represents years of Stockfish training data.  Match results against the Stockfish net provide the clearest measure of training progress: the goal is to close the gap, then surpass it with a network tuned to Epoch's own search characteristics.  Current result with the SF15.1 net: **92W–8D–0L (96.0%)** vs the classical Epoch eval at 10+0.1s/move.
+A network trained from scratch by Leaf itself (via TDLeaf(λ) self-play) will initially be weaker than `nn-ad9b42354671.nnue`, which represents years of Stockfish training data.  Match results against the Stockfish net provide the clearest measure of training progress: the goal is to close the gap, then surpass it with a network tuned to Leaf's own search characteristics.  Current result with the SF15.1 net: **92W–8D–0L (96.0%)** vs the classical Leaf eval at 10+0.1s/move.
 
 **3. Weight initialisation for fresh training.**
-Epoch can generate a fresh `.nnue` with `--init-nnue --write-nnue <file>`.  FC and FT weights are sampled from Gaussian distributions measured from the SF15.1 network; all biases are zero; PSQT is set to classical piece values.
+Leaf can generate a fresh `.nnue` with `--init-nnue --write-nnue <file>`.  FC and FT weights are sampled from Gaussian distributions measured from the SF15.1 network; all biases are zero; PSQT is set to classical piece values.
 
 | Layer | Initialisation |
 |-------|---------------|
@@ -56,7 +56,7 @@ Epoch can generate a fresh `.nnue` with `--init-nnue --write-nnue <file>`.  FC a
 
 All int8 weights use **rejection sampling** (truncated Gaussian): samples outside ±127 are discarded and redrawn rather than clipped, avoiding artificial density spikes at the int8 boundaries.  The FC2 σ is intentionally lower than the measured SF15.1 value of 76.38 — the reference net's wide, near-bimodal FC2 distribution is the *result* of training, not a useful prior; σ=76.38 would clip roughly 20% of samples to ±127, producing chaotic initial evaluations.  σ=30 avoids all clipping while retaining enough diversity; training pushes FC2 weights to their learned magnitudes naturally.  Biases are zero-initialised because random N(μ,σ) from an unrelated distribution adds noise with no useful prior.
 
-The network file itself is not modified by Epoch.  All trained weights are stored in a companion **`.tdleaf.bin`** file and loaded on top of (or instead of) the base network at startup.
+The network file itself is not modified by Leaf.  All trained weights are stored in a companion **`.tdleaf.bin`** file and loaded on top of (or instead of) the base network at startup.
 
 **Architecture summary:**
 
@@ -74,7 +74,7 @@ See [`docs/NNUE.md`](docs/NNUE.md) for full architecture notes, NEON optimizatio
 
 ### TDLeaf(λ) Online Learning
 
-Epoch includes a complete **TDLeaf(λ)** reinforcement learning system (Baxter, Tridgell & Weaver, 2000) that trains all NNUE layers from self-play games.  The long-term goal is for Epoch to develop its own network, tuned to its own search, entirely through self-play — experiments are already in progress.
+Leaf includes a complete **TDLeaf(λ)** reinforcement learning system (Baxter, Tridgell & Weaver, 2000) that trains all NNUE layers from self-play games.  The long-term goal is for Leaf to develop its own network, tuned to its own search, entirely through self-play — experiments are already in progress.
 
 - Trains **all layers**: FC0, FC1, FC2, the 46 MB feature transformer, and PSQT weights
 - Uses PV leaf scores as the TD signal; gradients flow backward through the full NNUE forward pass
@@ -88,11 +88,11 @@ Build with `NNUE=1 TDLEAF=1`.  See [`docs/TDLEAF.md`](docs/TDLEAF.md) for the fu
 
 ## Building
 
-Epoch uses a unity build — `src/Epoch.cc` includes all other `.cpp` files.
+Leaf uses a unity build — `src/Leaf.cc` includes all other `.cpp` files.
 
 **Classical eval (no NNUE):**
 ```sh
-g++ -o Epoch src/Epoch.cc -O3 -D VERS="dev" -D TABLEBASES=1 -pthread
+g++ -o Leaf src/Leaf.cc -O3 -D VERS="dev" -D TABLEBASES=1 -pthread
 ```
 
 **With NNUE evaluation:**
@@ -106,7 +106,7 @@ perl src/comp.pl <version> NNUE=1
 perl src/comp.pl <version> NNUE=1 TDLEAF=1
 ```
 
-The `perl comp.pl` build script handles include paths, optimization flags, and optional `OVERWRITE` to skip the interactive prompt.  Built binaries land in `run/` with the name `Epoch_v<version>`.
+The `perl comp.pl` build script handles include paths, optimization flags, and optional `OVERWRITE` to skip the interactive prompt.  Built binaries land in `run/` with the name `Leaf_v<version>`.
 
 The network file `nn-ad9b42354671.nnue` must be present in the same directory as the binary (or the directory from which the engine is launched).  It can be obtained from the [official Stockfish networks repository](https://github.com/official-stockfish/networks).
 
@@ -114,18 +114,18 @@ The network file `nn-ad9b42354671.nnue` must be present in the same directory as
 
 ## Running
 
-Epoch speaks the **xboard/CECP** protocol exclusively.  Point any xboard-compatible GUI at the binary, or run it directly from the command line:
+Leaf speaks the **xboard/CECP** protocol exclusively.  Point any xboard-compatible GUI at the binary, or run it directly from the command line:
 
 ```sh
 cd run/
-./Epoch_v2026_03_09a
+./Leaf_v2026_03_09a
 ```
 
-Self-play matches between two Epoch versions (requires [cutechess-cli](https://github.com/cutechess/cutechess)):
+Self-play matches between two Leaf versions (requires [cutechess-cli](https://github.com/cutechess/cutechess)):
 
 ```sh
 cd run/
-python3 match.py Epoch_vA Epoch_vB -n 200 -c 4 -tc 10+0.1
+python3 match.py Leaf_vA Leaf_vB -n 200 -c 4 -tc 10+0.1
 ```
 
 ---

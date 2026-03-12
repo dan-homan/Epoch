@@ -272,7 +272,7 @@ int main(int argc, char *argv[])
       logfile.clear();
       logfile << "===============================\n"; 
       logfile << "=\n";
-      logfile << "= Log file for Epoch v" << VERS << VERS2 << "\n";
+      logfile << "= Log file for Leaf v" << VERS << VERS2 << "\n";
       logfile << "=\n";
       logfile << "===============================\n"; 
     }
@@ -344,9 +344,9 @@ int main(int argc, char *argv[])
 #endif
 
   if(!xboard) {
-    cout << "\nEpoch Chess Engine version " << VERS << VERS2 << " (beta),"
+    cout << "\nLeaf Chess Engine version " << VERS << VERS2 << " (beta),"
          << "\nCopyright (C) 1997-2026 Daniel C. Homan, Granville OH, USA"
-         << "\nEpoch comes with ABSOLUTELY NO WARRANTY. This is free"
+         << "\nLeaf comes with ABSOLUTELY NO WARRANTY. This is free"
          << "\nsoftware, and you are welcome to redistribute it under"
          << "\ncertain conditions. This program is distributed under the"
          << "\nGNU public license.  See the file license.txt"
@@ -732,11 +732,11 @@ void help()
  cout <<   "\n      Nf3, e4, O-O, d8=Q, Bxf7, Ned7, etc....";
  cout <<   "\n      Other notation's like: g1f3, e2e4, etc... are also ok.";
  cout << "\n\n   new            -> start a new game";
- cout <<   "\n   quit           -> end Epoch";
+ cout <<   "\n   quit           -> end Leaf";
  cout <<   "\n   save           -> save the game to a text file";
  cout <<   "\n   go             -> computer takes side on move";
- cout <<   "\n   white          -> white to move, Epoch takes black";
- cout <<   "\n   black          -> black to move, Epoch takes white";
+ cout <<   "\n   white          -> white to move, Leaf takes black";
+ cout <<   "\n   black          -> black to move, Leaf takes white";
  cout <<   "\n   book           -> toggle opening book";
  cout <<   "\n   post           -> turn on display of computer thinking";
  cout <<   "\n   nopost         -> turn off display of computer thinking";
@@ -1003,7 +1003,7 @@ void parse_command()
       cout << "feature smp=1\n";
       cout << "feature memory=1\n";
       cout << "feature variants=\"normal,nocastle,fischerandom\"\n";
-      cout << "feature myname=\"Epoch v" << VERS << VERS2 << "\"\n";
+      cout << "feature myname=\"Leaf v" << VERS << VERS2 << "\"\n";
       snprintf(outstring, sizeof(outstring), "feature option=\"Playing Strength -slider %i 1 100\n", game.knowledge_scale);
       cout << outstring;
       cout << "feature done=1\n";
@@ -1199,9 +1199,9 @@ void save_game()
     strcpy(Event, "Chess Match");
     strcpy(Date, "??.??.????");
     if (game.p_side)
-     { strcpy(White, "Human"); strcpy(Black, "Epoch"); }
+     { strcpy(White, "Human"); strcpy(Black, "Leaf"); }
     else
-     { strcpy(White, "Epoch"); strcpy(Black, "Human"); }
+     { strcpy(White, "Leaf"); strcpy(Black, "Human"); }
   }
 
   ofstream outfile(gname);

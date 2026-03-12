@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Verify Epoch FC0 computation against the raw .nnue file.
+Verify Leaf FC0 computation against the raw .nnue file.
 
 Usage:
-  1. Run Epoch with NNUE_DEBUG_VERBOSE=1 and capture the l0_in output.
+  1. Run Leaf with NNUE_DEBUG_VERBOSE=1 and capture the l0_in output.
   2. Set L0_IN below from that output.
   3. python3 verify_fc0.py
 
 The script parses nn-ad9b42354671.nnue, skips the LEB128-compressed FT
 section, navigates to stack 7's FC0 section, and computes fc0_raw from
-the given l0_in to compare with Epoch's output.
+the given l0_in to compare with Leaf's output.
 """
 
 import struct, sys, os
@@ -27,7 +27,7 @@ L2_PADDED   = 32
 # ------------------------------------------------------------------
 # Paste l0_in from NNUE_DEBUG_VERBOSE output here.
 # Format: sparse dict {index: value}, all others are 0.
-# (Run: printf 'score\nquit\n' | NNUE_DEBUG_VERBOSE=1 ./Epoch_vXXX)
+# (Run: printf 'score\nquit\n' | NNUE_DEBUG_VERBOSE=1 ./Leaf_vXXX)
 # ------------------------------------------------------------------
 L0_IN_SPARSE = {}   # will be filled from command-line or hardcoded below
 
@@ -36,7 +36,7 @@ HARDCODED_L0_IN = {
     # filled after running the build — leave empty to read from stdin
 }
 
-# fc0_raw from Epoch (starting position, stack 7):
+# fc0_raw from Leaf (starting position, stack 7):
 EXCHESS_FC0_RAW = [6158, -3377, 2464, 2299, -7790, -2787, 219, 7333,
                    4937, 14302, -2314, 4713, -2947, -5710, -1691, 3564]
 
@@ -201,7 +201,7 @@ def fc2_forward(fc2_in, stack):
     return out
 
 # ------------------------------------------------------------------
-# Starting position feature computation (Epoch square numbering: a1=0)
+# Starting position feature computation (Leaf square numbering: a1=0)
 # ------------------------------------------------------------------
 PS_NB  = 704   # 11 * 64
 KING_BUCKETS_WHITE = [  # indexed by ksq_f (= ksq for white, ksq^56 for black)
@@ -216,7 +216,7 @@ KING_BUCKETS_WHITE = [  # indexed by ksq_f (= ksq for white, ksq^56 for black)
 ]
 
 def make_feature(persp, ksq, psq, ptype, pside):
-    """Epoch halfkav2_feature — returns feature index or -1."""
+    """Leaf halfkav2_feature — returns feature index or -1."""
     PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING = 1, 2, 3, 4, 5, 6
     WHITE, BLACK = 1, 0
     if ptype == KING and pside == persp:
@@ -276,7 +276,7 @@ def verify_accumulator(ft_biases, ft_weights, epoch_acc, persp_name, persp):
         for j in range(HALF_DIMS):
             acc[j] += ft_weights[base + j]
     print(f"  Computed acc[0..15]: {acc[:16]}")
-    print(f"  Epoch  acc[0..15]: {epoch_acc[:16]}")
+    print(f"  Leaf  acc[0..15]: {epoch_acc[:16]}")
     match = acc[:16] == list(epoch_acc[:16])
     print(f"  First 16 match: {match}")
     if not match:
@@ -448,7 +448,7 @@ if __name__ == '__main__':
     saturation_report(acc3, "Pos3 stm(WHITE)")
 
     # ---------------------------------------------------------------
-    # l0_in from NNUE_DEBUG_VERBOSE (optional, for Epoch comparison)
+    # l0_in from NNUE_DEBUG_VERBOSE (optional, for Leaf comparison)
     # ---------------------------------------------------------------
     l0_in_epoch = [0] * L0_INPUT
     if len(sys.argv) > 1:
@@ -457,7 +457,7 @@ if __name__ == '__main__':
                 if '=' in tok:
                     idx, val = tok.split('=')
                     l0_in_epoch[int(idx.strip('[]'))] = int(val)
-        print("\nEpoch l0_in provided — computing FC against stack 7:")
+        print("\nLeaf l0_in provided — computing FC against stack 7:")
         fc0_raw_ex = fc0_from_l0in(l0_in_epoch, s7)
         fc1_in_ex  = dual_act(fc0_raw_ex)
         fc1_raw_ex = fc1_forward(fc1_in_ex, s7)

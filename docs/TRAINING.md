@@ -2,13 +2,13 @@
 
 ## Overview
 
-This documents the first complete TDLeaf(λ) training run on Epoch, carried out on 9 March 2026.  The goal was to train a randomly-initialised NNUE network from scratch via self-play and measure how much strength it gains as a function of game count.
+This documents the first complete TDLeaf(λ) training run on Leaf, carried out on 9 March 2026.  The goal was to train a randomly-initialised NNUE network from scratch via self-play and measure how much strength it gains as a function of game count.
 
 ---
 
 ## Network Initialisation
 
-The starting network, **`nn-fresh-260309.nnue`**, was created by Epoch's `--init-nnue` facility.  It is not derived from any pre-trained chess data; all weights are drawn from Gaussian distributions whose parameters (mean, σ) were measured empirically from the Stockfish 15.1 release network (`nn-ad9b42354671.nnue`).  See `docs/NNUE.md` for the per-layer distributions.
+The starting network, **`nn-fresh-260309.nnue`**, was created by Leaf's `--init-nnue` facility.  It is not derived from any pre-trained chess data; all weights are drawn from Gaussian distributions whose parameters (mean, σ) were measured empirically from the Stockfish 15.1 release network (`nn-ad9b42354671.nnue`).  See `docs/NNUE.md` for the per-layer distributions.
 
 PSQT weights are initialised to piece-value priors rather than random values.  The prior assigns each piece type a uniform signed value chosen so that one extra own piece of that type scores the standard centipawn equivalent: pawn = 100 cp, knight = 300 cp, bishop = 300 cp, rook = 500 cp, queen = 900 cp.  In internal NNUE units (where the score formula is `psqt_diff/2 × 100/5776`) this corresponds to values of 5,776 / 17,328 / 17,328 / 28,880 / 51,984 respectively.  Kings are set to zero.  The network therefore begins with a crude but sensible material prior for positional scoring, while the FC layers start from random noise.
 
@@ -21,7 +21,7 @@ The network is a statistically plausible but chess-naïve starting point — it 
 | Parameter | Value |
 |-----------|-------|
 | Algorithm | TDLeaf(λ), online, all layers updated |
-| Training format | Self-play: `Epoch_vtrain` (learning) vs `Epoch_vtrain_ro` (read-only) |
+| Training format | Self-play: `Leaf_vtrain` (learning) vs `Leaf_vtrain_ro` (read-only) |
 | Positions | Fischer Random (Chess960), random starting position each game |
 | Opening book | None |
 | Tablebases | Disabled |
@@ -49,7 +49,7 @@ After training, a test tournament was run among all network snapshots plus two r
 
 **Reference engines:**
 
-- **`EXchess_classic`** — the classical hand-crafted Epoch eval; the strong-reference ceiling for this run
+- **`EXchess_classic`** — the classical hand-crafted Leaf eval; the strong-reference ceiling for this run
 - **`EXchess_classic_material`** — a material-only classical build (`MATERIAL_ONLY=1`); the weak-reference floor
 
 ---
@@ -63,13 +63,13 @@ Computed with `scripts/bayeselo_ratings.py` (BayesElo, maximum-likelihood).  Rat
 | Rank | Engine                        |  Elo  |  ±  | Games | Score |  Oppo | Draws |
 |-----:|-------------------------------|------:|----:|------:|------:|------:|------:|
 |    1 | EXchess_classic               | +1055 | 152 | 1,000 |  100% |   +76 |    0% |
-|    2 | Epoch_vnn-fresh-260309-8000g  |  +135 |  14 | 3,500 |   71% |   −19 |   11% |
+|    2 | Leaf_vnn-fresh-260309-8000g  |  +135 |  14 | 3,500 |   71% |   −19 |   11% |
 |    3 | EXchess_classic_material      |   +40 |  19 | 1,000 |   45% |   +76 |   22% |
-|    4 | Epoch_vnn-fresh-260309-4000g  |   +18 |  13 | 3,500 |   60% |    −3 |   14% |
-|    5 | Epoch_vnn-fresh-260309-2000g  |  −140 |  21 | 1,000 |   22% |   +76 |   21% |
-|    6 | Epoch_vnn-fresh-260309-1000g  |  −271 |  26 | 1,000 |   12% |   +76 |   11% |
-|    7 | Epoch_vnn-fresh-260309-500g   |  −353 |  32 | 1,000 |    8% |   +76 |    7% |
-|    8 | Epoch_vnn-fresh-260309 (0g)   |  −484 |  44 | 1,000 |    4% |   +76 |    3% |
+|    4 | Leaf_vnn-fresh-260309-4000g  |   +18 |  13 | 3,500 |   60% |    −3 |   14% |
+|    5 | Leaf_vnn-fresh-260309-2000g  |  −140 |  21 | 1,000 |   22% |   +76 |   21% |
+|    6 | Leaf_vnn-fresh-260309-1000g  |  −271 |  26 | 1,000 |   12% |   +76 |   11% |
+|    7 | Leaf_vnn-fresh-260309-500g   |  −353 |  32 | 1,000 |    8% |   +76 |    7% |
+|    8 | Leaf_vnn-fresh-260309 (0g)   |  −484 |  44 | 1,000 |    4% |   +76 |    3% |
 
 ### Progress by Game Count
 
@@ -89,11 +89,11 @@ The rate of improvement is declining with game count, falling from ~0.26 Elo/gam
 
 | Opponent | W | D | L | Score |
 |----------|--:|--:|--:|------:|
-| Epoch_vnn-fresh-260309 (0g) | 479 | 9 | 12 | 96.7% |
-| Epoch_vnn-fresh-260309-500g | 446 | 34 | 20 | 92.6% |
-| Epoch_vnn-fresh-260309-1000g | 447 | 33 | 20 | 92.7% |
-| Epoch_vnn-fresh-260309-2000g | 380 | 77 | 43 | 83.7% |
-| Epoch_vnn-fresh-260309-4000g | 295 | 107 | 98 | 69.7% |
+| Leaf_vnn-fresh-260309 (0g) | 479 | 9 | 12 | 96.7% |
+| Leaf_vnn-fresh-260309-500g | 446 | 34 | 20 | 92.6% |
+| Leaf_vnn-fresh-260309-1000g | 447 | 33 | 20 | 92.7% |
+| Leaf_vnn-fresh-260309-2000g | 380 | 77 | 43 | 83.7% |
+| Leaf_vnn-fresh-260309-4000g | 295 | 107 | 98 | 69.7% |
 | EXchess_classic_material | 246 | 113 | 141 | 60.5% |
 | EXchess_classic | 1 | 1 | 498 | 0.3% |
 
