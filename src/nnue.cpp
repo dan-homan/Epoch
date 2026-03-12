@@ -1331,20 +1331,22 @@ void nnue_init_zero_weights()
     if (ft_biases)
         memset(ft_biases, 0, NNUE_HALF_DIMS * sizeof(int16_t));
 
-    // ---- FT weights: random; PSQT: uniform random per piece type ----
+    // ---- FT weights: random; PSQT: classical piece values ----
     // Conversion: V = cp * 5776 / 100.  PSQT is side-to-move based:
     //   own pieces (pside==persp)  → +V  (positive contribution to stm score)
     //   opp pieces (pside!=persp)  → -V  (negative contribution to stm score)
-    // Each feature draws its magnitude independently from Uniform[LO, HI].
-    // Ranges in internal int32 units (cp * 5776 / 100):
-    //   Pawn   80-120 cp → [4621,  6931]
-    //   Knight 250-450cp → [14440, 26001]
-    //   Bishop 250-450cp → [14440, 26001]
-    //   Rook   400-700cp → [23104, 40432]
-    //   Queen  900-1400cp→ [51984, 80864]
-    //   King   0 cp      → [0,     0]
-    static const float PSQT_RND_LO[7] = { 0.f,  4621.f, 14440.f, 14440.f, 23104.f, 51984.f, 0.f };
-    static const float PSQT_RND_HI[7] = { 0.f,  6931.f, 26001.f, 26001.f, 40432.f, 80864.f, 0.f };
+    // Values match the classical evaluator (score.h: value[] = {0,100,377,399,596,1197,0}).
+    // King PSQT is 0 — the classical value[KING]=10000 is a mate sentinel, not material.
+    // Internal units: cp * 5776 / 100.
+    static const float PSQT_VAL[7] = {
+        0.f,                        // EMPTY
+        100.f * 5776.f / 100.f,     // PAWN   = 5776.0
+        377.f * 5776.f / 100.f,     // KNIGHT = 21775.5
+        399.f * 5776.f / 100.f,     // BISHOP = 23046.2
+        596.f * 5776.f / 100.f,     // ROOK   = 34425.0
+        1197.f * 5776.f / 100.f,    // QUEEN  = 69143.7
+        0.f,                        // KING   = 0 (no material value)
+    };
     if (ft_weights_f32) {
         size_t ft_sz   = (size_t)NNUE_FT_INPUTS * NNUE_HALF_DIMS;
         size_t psqt_sz = (size_t)NNUE_FT_INPUTS * NNUE_PSQT_BKTS;
@@ -1365,7 +1367,7 @@ void nnue_init_zero_weights()
         memset(grad_psqt_w,      0, psqt_sz * sizeof(float));
         memset(ft_dirty,         0, NNUE_FT_INPUTS * sizeof(bool));
 
-        // Enumerate all possible features and assign signed piece values.
+        // Enumerate all possible features and assign signed classical piece values.
         // Conflicts between mirror-symmetric (ksq) pairs always write the same value.
         for (int persp = 0; persp < 2; persp++) {
             for (int ksq = 0; ksq < 64; ksq++) {
@@ -1374,8 +1376,7 @@ void nnue_init_zero_weights()
                         for (int pside = 0; pside < 2; pside++) {
                             int fi = halfkav2_feature(persp, ksq, psq, ptype, pside);
                             if (fi < 0 || fi >= NNUE_FT_INPUTS) continue;
-                            std::uniform_real_distribution<float> ud(PSQT_RND_LO[ptype], PSQT_RND_HI[ptype]);
-                            float val = (pside == persp ? 1.f : -1.f) * ud(rng);
+                            float val = (pside == persp ? 1.f : -1.f) * PSQT_VAL[ptype];
                             for (int b = 0; b < NNUE_PSQT_BKTS; b++)
                                 psqt_weights_f32[fi * NNUE_PSQT_BKTS + b] = val;
                         }
@@ -1388,7 +1389,7 @@ void nnue_init_zero_weights()
     // Sync all int8/int16/int32 inference arrays from the zeroed float shadows.
     nnue_requantize_fc();
     nnue_zero_initialized = true;
-    printf("NNUE TDLeaf: FC+FT weights=random N(mean,std) SF15.1; biases=zero; PSQT=uniform-random per piece type\n");
+    printf("NNUE TDLeaf: FC+FT weights=random N(mean,std) SF15.1; biases=zero; PSQT=classical piece values\n");
 }
 
 // ---------------------------------------------------------------------------
