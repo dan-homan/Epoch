@@ -69,7 +69,7 @@ errors (unknown types, undeclared identifiers).  These are expected and can be i
 
 | File | Role |
 |------|------|
-| `src/main.cpp` | xboard protocol, game loop, TDLeaf hooks (`tdleaf_record_ply`, `tdleaf_update_after_game`) |
+| `src/main.cpp` | xboard protocol, game loop, TDLeaf hooks (`tdleaf_record_ply`, `tdleaf_update_after_game`, `tdleaf_replay`) |
 | `src/search.cpp` | PVS alpha-beta, null-move pruning, LMR, lazy SMP, iterative deepening; tracks `id_scores[]` for TDLeaf |
 | `src/score.cpp` | Classical hand-crafted eval + NNUE dispatch; NNUE/pawn/score hash probe/store |
 | `src/nnue.cpp` | NNUE forward pass (int8 inference + NEON), FP32 shadow weights, gradient accumulation, `.tdleaf.bin` I/O |
@@ -84,12 +84,13 @@ errors (unknown types, undeclared identifiers).  These are expected and can be i
 - **FC layers (×8 material-bucket stacks):** FC0 (1,024→16, SqrCReLU) → FC1 (30→32) → FC2 (32→1)
 - **Score:** `(psqt_diff/2 + positional) × 100/5776` centipawns
 - **Accumulators:** lazily updated at `exec_move` sites via `nnue_record_delta` / `nnue_apply_delta`
-- **NEON SIMD** optimisations for Apple M1 (arm64); Linux x86-64 needs fallbacks (see TODO)
+- **SIMD:** NEON (Apple M1/arm64) and AVX2/SSE4.1 (x86-64) hot paths for SqrCReLU, FC0, FC1; scalar fallback
 
 ### TDLeaf(λ) learning
 
 - After each search, `tdleaf_record_ply()` walks the PV to the leaf, snapshots the accumulator, active feature indices, and iterative-deepening score history.
 - After each game, `tdleaf_update_after_game()` computes backward TD errors (λ=0.7), applies score-change clipping (TDLEAF_SCORE_CLIP_CP=200 cp) and ID-stability weighting (TDLEAF_ID_VAR_SIGMA2=10,000 cp²), then backpropagates through FC/FT/PSQT layers.
+- `tdleaf_replay()` then runs `TDLEAF_REPLAY_K` (default 2) additional passes over the last `TDLEAF_REPLAY_BUF_N` (default 8) completed games stored in a ring buffer, refreshing scores from current weights before each pass.
 - Weights persist to `<net>.tdleaf.bin` (v4 format); POSIX file locking + delta merging allows concurrent multi-instance training.
 - `material` in `score.cpp` is **already STM (side-to-move) POV** — do not flip it.
 

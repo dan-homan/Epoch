@@ -45,7 +45,7 @@ change between consecutive moves exceeds `TDLEAF_SCORE_CLIP_CP` centipawns — s
 
 where `∇_w d_t = d_t * (1 - d_t) / K * ∇_w score_t`.
 
-Defaults: `λ = 0.7`, `K = 400`, `TDLEAF_ALPHA = 200` (FC+FT), `NNUE_FT_LR_SCALE = 1.0` (FT weights), `NNUE_FT_BIAS_LR_SCALE = 10.0` (FT biases), `NNUE_PSQT_LR_SCALE = 1000` (PSQT), `NNUE_FC_BIAS_LR_SCALE = 1000` (FC biases).
+Defaults: `λ = 0.7`, `K = 400`, `TDLEAF_ALPHA = 200` (FC+FT), `NNUE_FT_LR_SCALE = 1.0` (FT weights), `NNUE_FT_BIAS_LR_SCALE = 10.0` (FT biases), `NNUE_PSQT_LR_SCALE = 10000` (PSQT), `NNUE_FC_BIAS_LR_SCALE = 1000` (FC biases).
 
 **Key design choice:** `d_t` is computed from `nnue_evaluate()` (direct static eval of the
 PV leaf), not from the search score propagated from the root.  This ensures the sigmoid
@@ -163,7 +163,7 @@ FC2 output (positional)
   The backward chain naturally amplifies the gradient to a useful magnitude for int16 weights.
 
 - `NNUE_PSQT_LR_SCALE` multiplies `grad_scale × 0.5` for the PSQT update.
-  Needs a large value (~1000) because PSQT bypasses the FC backward chain entirely —
+  Needs a large value (~10,000) because PSQT bypasses the FC backward chain entirely —
   `grad_scale = TDLEAF_ALPHA × e[t] × d(1−d)/K × cp_factor ≈ 2×10⁻⁴`, while PSQT
   weights are at int32 scale (~5,776 per pawn).  Without the amplification, per-game
   updates would be ~1/10,000 of a pawn.
@@ -286,18 +286,26 @@ perl comp.pl init_nnue NNUE=1 TDLEAF=1
 ./Epoch_vinit_nnue --init-nnue --write-nnue nn-fresh.nnue
 ```
 
-This calls `nnue_alloc_arrays()` + `nnue_init_fp32_weights()` + `nnue_init_zero_weights()`
-(despite the name, `nnue_init_zero_weights` samples from N(μ,σ) measured from SF15.1):
+This calls `nnue_alloc_arrays()` + `nnue_init_fp32_weights()` + `nnue_init_zero_weights()`:
 
-| Component | Distribution |
-|-----------|-------------|
+| Component | Initialisation |
+|-----------|---------------|
 | FC0 weights | N(0.24, 8.43), truncated ±127 (rejection sampling) |
 | FC1 weights | N(−1.10, 18.30), truncated ±127 (rejection sampling) |
 | FC2 weights | N(1.10, 30.0), truncated ±127 — σ reduced from measured 76.38; see below |
-| FC0/1/2 biases | N(μ,σ) measured from SF15.1 |
-| FT weights (int16) | N(−0.71, 44.41) |
-| FT biases (int16) | N(3.34, 96.48) |
-| PSQT | Signed piece values: pawn ±5776, knight/bishop ±17328, rook ±28880, queen ±51984 |
+| FC0/1/2 biases | **0** (zero) |
+| FT weights (int16) | N(−0.71, 44.41), clipped to int16 range |
+| FT biases (int16) | **0** (zero) |
+| PSQT | Classical piece values (score.h): Pawn=5776, Knight=21776, Bishop=23046, Rook=34425, Queen=69144, King=0 (units: cp × 5776/100); signed ± by pside==persp |
+
+Biases are zero-initialised because random N(μ,σ) from an unrelated SF15.1 distribution
+provides no useful prior — it only adds noise that TDLeaf must overcome via its
+near-cancelling per-game gradient structure.  FT weights break symmetry sufficiently for
+SqrCReLU activations to be non-zero from game 1.
+
+PSQT is initialised to classical evaluator piece values (score.h `value[]`) converted to
+NNUE int32 units.  This gives TDLeaf a neutral but principled starting point rather than
+random values with no positional content.
 
 **FC2 σ note:** The measured SF15.1 FC2 distribution (σ=76.38) is the *result* of training —
 many weights are pushed near ±127 after learning.  Using σ=76.38 for random init clips
@@ -307,8 +315,7 @@ diversity to prevent pathological symmetry.  The trained FC2 distribution will n
 widen as TDLeaf pushes high-importance weights toward their saturation limits.
 
 All int8 weight sampling uses rejection sampling (not clipping): values outside ±127 are
-discarded and redrawn.  FC biases are int32 with no range constraint; FT weights/biases are
-int16 with σ << 32767, so no clipping issue arises for those layers.
+discarded and redrawn.
 
 Then build training binaries pointing at the new file:
 
@@ -330,10 +337,53 @@ perl comp.pl train_fresh_ro NNUE=1 NNUE_NET=nn-fresh.nnue TDLEAF=1 TDLEAF_READON
 | `src/search.cpp` — search start | `id_score_count = 0;` reset at the start of each search |
 | `src/search.cpp` — after each ID iteration | Appends current `g` to `id_scores[]` ring, increments `id_score_count` |
 | `src/main.cpp` — after `ts.search()` | `tdleaf_record_ply()` with root acc + PV + `id_scores` + `id_score_count` |
-| `src/main.cpp` — `game.over = 1` sites | `tdleaf_update_after_game()` |
+| `src/main.cpp` — `game.over = 1` sites | `tdleaf_update_after_game()` then `tdleaf_replay()` |
 | `src/main.cpp` — `new_game` / `setboard` | `td_game.n_plies = 0` |
 | `src/Epoch.cc` | `#if TDLEAF #include "tdleaf.cpp" #endif` |
 | `src/comp.pl` | `TDLEAF=1` flag → `-D TDLEAF=1` |
+
+---
+
+## Epoch-Based Replay
+
+After `tdleaf_update_after_game()` applies the live gradient pass, `tdleaf_replay()`
+runs `TDLEAF_REPLAY_K` (default 2) additional passes over the last `TDLEAF_REPLAY_BUF_N`
+(default 8) completed games stored in a static ring buffer.
+
+### How it works (Flavor B)
+
+1. The completed `TDGameRecord` (accumulator snapshots + feature indices) is pushed into
+   the ring buffer, replacing the oldest entry when full.
+2. For each replay pass, iterate over all buffered games oldest-first:
+   a. `tdleaf_refresh_scores()` rewrites each ply's `score_stm` by calling
+      `nnue_evaluate_acc_raw()` on the stored `acc[][]` against the **current quantized
+      weights**.  The accumulators themselves are frozen (Flavor B limitation — the leaf
+      positions themselves are not re-searched).
+   b. `tdleaf_accumulate_game()` computes TD errors and accumulates gradients exactly
+      as in the live pass.
+3. After all games in the pass are processed, `nnue_apply_gradients()` and
+   `nnue_requantize_fc()` are called once, so the next pass's score refresh sees
+   the updated weights.
+4. Weights are saved to `.tdleaf.bin` after all K passes complete.
+
+Score-change clipping and ID-stability weighting apply identically in replay passes
+(the stored `id_score_variance` values are reused unchanged).
+
+### Ablation results (K vs. Elo gain)
+
+| K | Result |
+|---|--------|
+| 0 | Baseline — much weaker |
+| 2 | **Best — current default** |
+| 3 | Slightly worse than K=2 |
+| 6 | Large regression |
+
+### Build flags
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `TDLEAF_REPLAY_K` | 2 | Replay passes per game; 0 disables replay |
+| `TDLEAF_REPLAY_BUF_N` | 8 | Ring buffer capacity (~4.5 MB × N static BSS) |
 
 ---
 
