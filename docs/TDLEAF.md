@@ -399,8 +399,8 @@ Score-change clipping and ID-stability weighting apply identically in replay pas
 
 ## Self-Play Driver
 
-`scripts/training_run.py` manages the process of creating the necessary binaries 
-(if needed), specifies a baseline `.nnue` file, and sets up training matches.  
+`scripts/training_run.py` manages the process of creating the necessary binaries
+(if needed), specifies a baseline `.nnue` file, and sets up training matches.
 
 `scripts/compare_nnue_learning.py` compares a `.tdleaf.bin`
 file against the baseline `.nnue` and shows FC, FT, and PSQT weight statistics.

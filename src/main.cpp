@@ -1091,7 +1091,7 @@ void parse_command()
     cin >> par_string >> par_val;
     set_score_value(par_string, par_val);
   }
-  else if(!strcmp(response, "getvalue")) { 
+  else if(!strcmp(response, "getvalue")) {
     char par_string[50];
     cin >> par_string;
     cout << par_string << ": "<< get_score_value(par_string) << "\n";;
