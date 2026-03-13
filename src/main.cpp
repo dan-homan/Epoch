@@ -1073,16 +1073,24 @@ void parse_command()
 #if TDLEAF && NNUE && !TDLEAF_READONLY
     if (nnue_available && game.td_game.n_plies > 0) {
       // xboard sends: "result 1-0 {description}" or "0-1" or "1/2-1/2"
-      char result_str[20] = "";
+      char result_str[20]   = "";
+      char result_desc[256] = "";
       cin >> result_str;
-      float td_result = 0.5f;
-      if (!strcmp(result_str, "1-0"))      td_result = 1.0f;
-      else if (!strcmp(result_str, "0-1")) td_result = 0.0f;
-      char tdleaf_save[FILENAME_MAX];
-      snprintf(tdleaf_save, sizeof(tdleaf_save), "%s%s", exec_path, NNUE_TDLEAF_BIN);
-      tdleaf_update_after_game(game.td_game, td_result, tdleaf_save);
-      tdleaf_replay(game.td_game, td_result, tdleaf_save);
-      game.td_game.n_plies = 0;
+      cin.getline(result_desc, sizeof(result_desc));
+      // Skip learning if the game ended on time — the result reflects clock
+      // management, not chess quality.  Both cutechess-cli and XBoard include
+      // the word "time" in the description for time-forfeit results
+      // (e.g. "{Black forfeits on time}", "{White wins on time}").
+      if (strstr(result_desc, "time") == nullptr) {
+        float td_result = 0.5f;
+        if (!strcmp(result_str, "1-0"))      td_result = 1.0f;
+        else if (!strcmp(result_str, "0-1")) td_result = 0.0f;
+        char tdleaf_save[FILENAME_MAX];
+        snprintf(tdleaf_save, sizeof(tdleaf_save), "%s%s", exec_path, NNUE_TDLEAF_BIN);
+        tdleaf_update_after_game(game.td_game, td_result, tdleaf_save);
+        tdleaf_replay(game.td_game, td_result, tdleaf_save);
+      }
+      game.td_game.n_plies = 0;  // always reset — prevent carry-over to next game
     }
 #endif
   }

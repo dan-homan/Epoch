@@ -1,5 +1,15 @@
 Changes since 2017_12_24
 
+2026_03_12 -- TDLeaf: skip learning on time-forfeit games (main.cpp).
+               The xboard "result" command handler now reads the full result line
+               including the {description} field.  If the description contains the
+               word "time" (e.g. "{Black forfeits on time}", "{White wins on time}")
+               tdleaf_update_after_game and tdleaf_replay are skipped — a time loss
+               reflects clock management, not chess quality.  game.td_game.n_plies
+               is always reset regardless, preventing carry-over to the next game.
+               No changes to tdleaf.cpp, tdleaf.h, chess.h, or the make_move()
+               call site (which cannot be triggered by a time forfeit).
+
 2026_03_12 -- Symmetric self-play training (training_run.py).
                Both engines in a training run are now full learners (NNUE=1 TDLEAF=1).
                The read-only binary (_ro, TDLEAF_READONLY=1) is no longer used in the
