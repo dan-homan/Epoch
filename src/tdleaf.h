@@ -64,6 +64,28 @@ static const float TDLEAF_SCORE_CLIP_CP  = 200.0f;
 static const float TDLEAF_ID_VAR_SIGMA2  = 10000.0f;
 
 // ---------------------------------------------------------------------------
+// Adam + per-weight LR decay hyperparameters
+//
+// Set TDLEAF_ADAM_LR0 = 0.0 to fall back to plain gradient descent (the
+// original Kalman-equivalent path).
+//
+// LR schedule:  lr(cnt) = LR0 / (1 + cnt / C)
+//   cnt = 0  → lr = LR0          (fresh weight, fast initial learning)
+//   cnt = C  → lr = LR0 / 2      (half-life)
+//   cnt >> C → lr → 0             (converged weight moves very little)
+//
+// FT weights use RMSProp (per-row v, no m); all other layers use full Adam.
+// v arrays are session-local (process memory only, not persisted to .tdleaf.bin).
+// t_adam is also session-local; resets alongside v so bias correction is always valid.
+// ---------------------------------------------------------------------------
+static const float TDLEAF_ADAM_LR0      = 0.5f;    // initial step size for FC/FT layers (float weight units)
+static const float TDLEAF_ADAM_PSQT_LR0 = 20.0f;   // initial step size for PSQT (int32 scale ~36k std; needs larger LR)
+static const float TDLEAF_ADAM_C        = 500.0f;  // LR half-life in per-weight updates (shared)
+static const float TDLEAF_ADAM_BETA1    = 0.9f;    // first-moment decay  (FC + FT bias + PSQT)
+static const float TDLEAF_ADAM_BETA2    = 0.999f;  // second-moment decay (all layers)
+static const float TDLEAF_ADAM_EPS      = 1e-8f;   // numerical floor
+
+// ---------------------------------------------------------------------------
 // Per-ply record: accumulator snapshot + search score
 // ---------------------------------------------------------------------------
 struct TDRecord {

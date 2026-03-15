@@ -1244,6 +1244,41 @@ static uint32_t ft_bias_cnt   [NNUE_HALF_DIMS] = {};
 static float    ft_bias_delta [NNUE_HALF_DIMS] = {};
 
 // ---------------------------------------------------------------------------
+// Adam moment arrays — session-local (process memory only; not saved to .tdleaf.bin).
+// All zeroed at session start in nnue_init_fp32_weights / nnue_init_zero_weights.
+//
+// FC layers + FT biases: true per-weight m and v (static, ~1.1 MB total).
+// FT weights:            per-row v only (RMSProp; m omitted — per-dim m would
+//                        require 92 MB heap and the per-row mean is too coarse
+//                        to be directionally useful).  Heap, ~88 KB.
+// PSQT:                  per-weight m and v (heap, ~1.4 MB; only 8 buckets/row
+//                        so per-weight is affordable and per-row is too coarse).
+// ---------------------------------------------------------------------------
+static float v_l0_w[NNUE_LAYER_STACKS][NNUE_L0_SIZE * NNUE_L0_INPUT] = {};
+static float v_l0_b[NNUE_LAYER_STACKS][NNUE_L0_SIZE]                  = {};
+static float v_l1_w[NNUE_LAYER_STACKS][NNUE_L1_SIZE * NNUE_L1_PADDED] = {};
+static float v_l1_b[NNUE_LAYER_STACKS][NNUE_L1_SIZE]                  = {};
+static float v_l2_w[NNUE_LAYER_STACKS][NNUE_L2_PADDED]                = {};
+static float v_l2_b[NNUE_LAYER_STACKS]                                 = {};
+static float v_ft_bias[NNUE_HALF_DIMS]                                  = {};
+
+static float m_l0_w[NNUE_LAYER_STACKS][NNUE_L0_SIZE * NNUE_L0_INPUT] = {};
+static float m_l0_b[NNUE_LAYER_STACKS][NNUE_L0_SIZE]                  = {};
+static float m_l1_w[NNUE_LAYER_STACKS][NNUE_L1_SIZE * NNUE_L1_PADDED] = {};
+static float m_l1_b[NNUE_LAYER_STACKS][NNUE_L1_SIZE]                  = {};
+static float m_l2_w[NNUE_LAYER_STACKS][NNUE_L2_PADDED]                = {};
+static float m_l2_b[NNUE_LAYER_STACKS]                                 = {};
+static float m_ft_bias[NNUE_HALF_DIMS]                                  = {};
+
+static float    *v_ft_row  = nullptr;  // [NNUE_FT_INPUTS] — FT per-row second moment (~88 KB)
+static float    *v_psqt_w  = nullptr;  // [NNUE_FT_INPUTS × PSQT_BKTS] — PSQT per-weight v (~720 KB)
+static float    *m_psqt_w  = nullptr;  // [NNUE_FT_INPUTS × PSQT_BKTS] — PSQT per-weight m (~720 KB)
+
+// Session-local Adam step counter.  Incremented once per nnue_apply_gradients() call.
+// Reset alongside the v/m arrays so bias correction v/(1-β²^t) is always valid.
+static uint32_t  t_adam    = 0;
+
+// ---------------------------------------------------------------------------
 // nnue_init_zero_weights — fresh-start FC/FT initialisation + classical PSQT
 //
 // === Weight means: all zero ===
@@ -1337,6 +1372,23 @@ void nnue_init_zero_weights()
     memset(grad_l2_w, 0, sizeof(grad_l2_w));
     memset(grad_l2_b, 0, sizeof(grad_l2_b));
 
+    // Adam moment arrays — session-local, reset to zero for fresh network.
+    memset(v_l0_w,    0, sizeof(v_l0_w));
+    memset(v_l0_b,    0, sizeof(v_l0_b));
+    memset(v_l1_w,    0, sizeof(v_l1_w));
+    memset(v_l1_b,    0, sizeof(v_l1_b));
+    memset(v_l2_w,    0, sizeof(v_l2_w));
+    memset(v_l2_b,    0, sizeof(v_l2_b));
+    memset(v_ft_bias, 0, sizeof(v_ft_bias));
+    memset(m_l0_w,    0, sizeof(m_l0_w));
+    memset(m_l0_b,    0, sizeof(m_l0_b));
+    memset(m_l1_w,    0, sizeof(m_l1_w));
+    memset(m_l1_b,    0, sizeof(m_l1_b));
+    memset(m_l2_w,    0, sizeof(m_l2_w));
+    memset(m_l2_b,    0, sizeof(m_l2_b));
+    memset(m_ft_bias, 0, sizeof(m_ft_bias));
+    t_adam = 0;
+
     // ---- FT biases: zero init ----
     // FT weights already break symmetry across dimensions, so zero FT biases
     // are sufficient to get varied SqrCReLU activations from game 1.
@@ -1396,6 +1448,14 @@ void nnue_init_zero_weights()
         memset(grad_ft_w,        0, ft_sz   * sizeof(float));
         memset(grad_psqt_w,      0, psqt_sz * sizeof(float));
         memset(ft_dirty,         0, NNUE_FT_INPUTS * sizeof(bool));
+
+        // Adam heap arrays — allocate on first use; zero for fresh network.
+        if (!v_ft_row)  v_ft_row  = new float[NNUE_FT_INPUTS]();
+        if (!v_psqt_w)  v_psqt_w  = new float[psqt_sz]();
+        if (!m_psqt_w)  m_psqt_w  = new float[psqt_sz]();
+        memset(v_ft_row,  0, NNUE_FT_INPUTS * sizeof(float));
+        memset(v_psqt_w,  0, psqt_sz * sizeof(float));
+        memset(m_psqt_w,  0, psqt_sz * sizeof(float));
 
         // Enumerate all possible features and assign classical material + PSQ values.
         // Each of the 8 PSQT buckets gets a stage-interpolated positional bonus.
@@ -1507,6 +1567,10 @@ void nnue_init_fp32_weights()
         ft_dirty         = new bool    [NNUE_FT_INPUTS];
         ft_delta_f32     = new float   [ft_sz]();    // zero-initialised
         psqt_delta_f32   = new float   [psqt_sz]();  // zero-initialised
+        // Adam heap arrays — session-local moment arrays for FT and PSQT.
+        v_ft_row  = new float[NNUE_FT_INPUTS]();
+        v_psqt_w  = new float[psqt_sz]();
+        m_psqt_w  = new float[psqt_sz]();
     }
     // Initialize float shadows from the loaded int16/int32 arrays.
     for (size_t i = 0; i < ft_sz;   i++) ft_weights_f32[i]   = (float)ft_weights[i];
@@ -1531,6 +1595,26 @@ void nnue_init_fp32_weights()
     memset(grad_ft_bias,  0, sizeof(grad_ft_bias));
     memset(ft_bias_cnt,   0, sizeof(ft_bias_cnt));
     memset(ft_bias_delta, 0, sizeof(ft_bias_delta));
+
+    // Adam moment arrays — session-local, reset at each session start.
+    memset(v_l0_w,    0, sizeof(v_l0_w));
+    memset(v_l0_b,    0, sizeof(v_l0_b));
+    memset(v_l1_w,    0, sizeof(v_l1_w));
+    memset(v_l1_b,    0, sizeof(v_l1_b));
+    memset(v_l2_w,    0, sizeof(v_l2_w));
+    memset(v_l2_b,    0, sizeof(v_l2_b));
+    memset(v_ft_bias, 0, sizeof(v_ft_bias));
+    memset(m_l0_w,    0, sizeof(m_l0_w));
+    memset(m_l0_b,    0, sizeof(m_l0_b));
+    memset(m_l1_w,    0, sizeof(m_l1_w));
+    memset(m_l1_b,    0, sizeof(m_l1_b));
+    memset(m_l2_w,    0, sizeof(m_l2_w));
+    memset(m_l2_b,    0, sizeof(m_l2_b));
+    memset(m_ft_bias, 0, sizeof(m_ft_bias));
+    if (v_ft_row)  memset(v_ft_row,  0, NNUE_FT_INPUTS * sizeof(float));
+    if (v_psqt_w)  memset(v_psqt_w,  0, psqt_sz * sizeof(float));
+    if (m_psqt_w)  memset(m_psqt_w,  0, psqt_sz * sizeof(float));
+    t_adam = 0;
 
     printf("NNUE TDLeaf: FP32 weights initialised (%d stacks + FT/PSQT + FT biases)\n", NNUE_LAYER_STACKS);
 }
@@ -1763,52 +1847,87 @@ void nnue_accumulate_gradients(const NNUEActivations &act, float grad_scale)
 // ---------------------------------------------------------------------------
 void nnue_apply_gradients()
 {
-    // Clamp gradient magnitude to TDLEAF_MAX_UPDATE_FRAC × max(|w|, 1).
-    auto clamp_grad = [](float w, float g) -> float {
-        //float max_delta = TDLEAF_MAX_UPDATE_FRAC * fmaxf(fabsf(w), 1.0f);
-        //if      (g >  max_delta) return  max_delta;
-        //else if (g < -max_delta) return -max_delta;
-        return g;
+    // Adam with per-weight LR decay.
+    // Set TDLEAF_ADAM_LR0 = 0.0 to fall back to plain gradient descent.
+    const bool use_adam = (TDLEAF_ADAM_LR0 > 0.0f);
+
+    if (use_adam) t_adam++;
+
+    // Bias-correction denominators — hoisted outside all per-weight loops.
+    const float bc1 = use_adam ? (1.0f - powf(TDLEAF_ADAM_BETA1, (float)t_adam)) : 1.0f;
+    const float bc2 = use_adam ? (1.0f - powf(TDLEAF_ADAM_BETA2, (float)t_adam)) : 1.0f;
+
+    // Full Adam step for FC layers and FT biases.
+    // When use_adam=false this degenerates to plain gradient descent (returns g).
+    // LR decays as lr(cnt) = LR0 / (1 + cnt/C), so converged weights move less each game.
+    auto do_step = [&](float g, float &m, float &v, uint32_t cnt) -> float {
+        if (!use_adam) return g;
+        m = TDLEAF_ADAM_BETA1 * m + (1.0f - TDLEAF_ADAM_BETA1) * g;
+        v = TDLEAF_ADAM_BETA2 * v + (1.0f - TDLEAF_ADAM_BETA2) * g * g;
+        float m_hat = m / bc1;
+        float v_hat = v / bc2;
+        float lr    = TDLEAF_ADAM_LR0 / (1.0f + (float)cnt / TDLEAF_ADAM_C);
+        return lr * m_hat / (sqrtf(v_hat) + TDLEAF_ADAM_EPS);
+    };
+    // PSQT Adam step — same algorithm but uses TDLEAF_ADAM_PSQT_LR0.
+    // PSQT weights are at int32 scale (std ~36,000) while FC weights are int8 scale (std ~3-50).
+    // Adam normalises gradient magnitude, so only LR0 sets the per-step size in weight-space.
+    // PSQT_LR0 must be ~1000× larger than FC LR0 to achieve comparable fractional updates.
+    auto do_step_psqt = [&](float g, float &m, float &v, uint32_t cnt) -> float {
+        if (!use_adam) return g;
+        m = TDLEAF_ADAM_BETA1 * m + (1.0f - TDLEAF_ADAM_BETA1) * g;
+        v = TDLEAF_ADAM_BETA2 * v + (1.0f - TDLEAF_ADAM_BETA2) * g * g;
+        float m_hat = m / bc1;
+        float v_hat = v / bc2;
+        float lr    = TDLEAF_ADAM_PSQT_LR0 / (1.0f + (float)cnt / TDLEAF_ADAM_C);
+        return lr * m_hat / (sqrtf(v_hat) + TDLEAF_ADAM_EPS);
     };
 
     for (int s = 0; s < NNUE_LAYER_STACKS; s++) {
         for (int i = 0; i < NNUE_L0_SIZE * NNUE_L0_INPUT; i++) {
             if (grad_l0_w[s][i] != 0.0f) {
-                float dw = clamp_grad(l0_weights_f32[s][i], grad_l0_w[s][i]);
+                float dw = do_step(grad_l0_w[s][i], m_l0_w[s][i], v_l0_w[s][i], l0_weights_cnt[s][i]);
                 l0_weights_f32[s][i] -= dw;  delta_l0_w[s][i] -= dw;
+                // Clamp float shadow to int8 range: prevents zombie weights where the float
+                // shadow drifts beyond ±127 while the requantised inference value is stuck.
+                if (l0_weights_f32[s][i] >  127.0f) l0_weights_f32[s][i] =  127.0f;
+                if (l0_weights_f32[s][i] < -127.0f) l0_weights_f32[s][i] = -127.0f;
                 l0_weights_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L0_SIZE; i++) {
             if (grad_l0_b[s][i] != 0.0f) {
-                float dw = clamp_grad(l0_biases_f32[s][i], grad_l0_b[s][i]);
+                float dw = do_step(grad_l0_b[s][i], m_l0_b[s][i], v_l0_b[s][i], l0_biases_cnt[s][i]);
                 l0_biases_f32[s][i] -= dw;  delta_l0_b[s][i] -= dw;
                 l0_biases_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L1_SIZE * NNUE_L1_PADDED; i++) {
             if (grad_l1_w[s][i] != 0.0f) {
-                float dw = clamp_grad(l1_weights_f32[s][i], grad_l1_w[s][i]);
+                float dw = do_step(grad_l1_w[s][i], m_l1_w[s][i], v_l1_w[s][i], l1_weights_cnt[s][i]);
                 l1_weights_f32[s][i] -= dw;  delta_l1_w[s][i] -= dw;
+                // Clamp float shadow to int8 range (same reason as FC0).
+                if (l1_weights_f32[s][i] >  127.0f) l1_weights_f32[s][i] =  127.0f;
+                if (l1_weights_f32[s][i] < -127.0f) l1_weights_f32[s][i] = -127.0f;
                 l1_weights_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L1_SIZE; i++) {
             if (grad_l1_b[s][i] != 0.0f) {
-                float dw = clamp_grad(l1_biases_f32[s][i], grad_l1_b[s][i]);
+                float dw = do_step(grad_l1_b[s][i], m_l1_b[s][i], v_l1_b[s][i], l1_biases_cnt[s][i]);
                 l1_biases_f32[s][i] -= dw;  delta_l1_b[s][i] -= dw;
                 l1_biases_cnt[s][i]++;
             }
         }
         for (int i = 0; i < NNUE_L2_PADDED; i++) {
             if (grad_l2_w[s][i] != 0.0f) {
-                float dw = clamp_grad(l2_weights_f32[s][i], grad_l2_w[s][i]);
+                float dw = do_step(grad_l2_w[s][i], m_l2_w[s][i], v_l2_w[s][i], l2_weights_cnt[s][i]);
                 l2_weights_f32[s][i] -= dw;  delta_l2_w[s][i] -= dw;
                 l2_weights_cnt[s][i]++;
             }
         }
         if (grad_l2_b[s] != 0.0f) {
-            float dw = clamp_grad(l2_bias_f32[s], grad_l2_b[s]);
+            float dw = do_step(grad_l2_b[s], m_l2_b[s], v_l2_b[s], l2_bias_cnt[s]);
             l2_bias_f32[s] -= dw;  delta_l2_b[s] -= dw;
             l2_bias_cnt[s]++;
         }
@@ -1824,27 +1943,56 @@ void nnue_apply_gradients()
     if (ft_dirty) {
         for (int fi = 0; fi < NNUE_FT_INPUTS; fi++) {
             if (!ft_dirty[fi]) continue;
-            // FT weights
-            float *fw = ft_weights_f32 + (size_t)fi * NNUE_HALF_DIMS;
-            float *gw = grad_ft_w      + (size_t)fi * NNUE_HALF_DIMS;
+            // FT weights — RMSProp with per-row v (no m; per-row mean is too coarse
+            // to carry directional first-moment signal).  Per-weight LR decay via cnt.
+            float    *fw  = ft_weights_f32 + (size_t)fi * NNUE_HALF_DIMS;
+            float    *gw  = grad_ft_w      + (size_t)fi * NNUE_HALF_DIMS;
             uint32_t *cnt = ft_weights_cnt + (size_t)fi * NNUE_HALF_DIMS;
-            float *fd = ft_delta_f32 ? ft_delta_f32 + (size_t)fi * NNUE_HALF_DIMS : nullptr;
-            for (int d = 0; d < NNUE_HALF_DIMS; d++) {
-                if (gw[d] != 0.0f) {
-                    float dw = clamp_grad(fw[d], gw[d]);
-                    fw[d] -= dw;  if (fd) fd[d] -= dw;
-                    cnt[d]++;
-                    gw[d] = 0.0f;
+            float    *fd  = ft_delta_f32 ? ft_delta_f32 + (size_t)fi * NNUE_HALF_DIMS : nullptr;
+            if (use_adam && v_ft_row) {
+                // Accumulate row mean g² over non-zero dims; update per-row v.
+                float g2sum = 0.0f;
+                int   n_nz  = 0;
+                for (int d = 0; d < NNUE_HALF_DIMS; d++) {
+                    if (gw[d] != 0.0f) { g2sum += gw[d] * gw[d]; n_nz++; }
+                }
+                if (n_nz > 0) {
+                    v_ft_row[fi] = TDLEAF_ADAM_BETA2 * v_ft_row[fi]
+                                 + (1.0f - TDLEAF_ADAM_BETA2) * (g2sum / (float)n_nz);
+                    float sv = sqrtf(v_ft_row[fi] / bc2) + TDLEAF_ADAM_EPS;
+                    for (int d = 0; d < NNUE_HALF_DIMS; d++) {
+                        if (gw[d] != 0.0f) {
+                            float lr = TDLEAF_ADAM_LR0 / (1.0f + (float)cnt[d] / TDLEAF_ADAM_C);
+                            float dw = lr * gw[d] / sv;
+                            fw[d] -= dw;  if (fd) fd[d] -= dw;
+                            cnt[d]++;
+                            gw[d] = 0.0f;
+                        }
+                    }
+                }
+            } else {
+                for (int d = 0; d < NNUE_HALF_DIMS; d++) {
+                    if (gw[d] != 0.0f) {
+                        fw[d] -= gw[d];  if (fd) fd[d] -= gw[d];
+                        cnt[d]++;
+                        gw[d] = 0.0f;
+                    }
                 }
             }
-            // PSQT weights
-            float *pw  = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
-            float *gpw = grad_psqt_w      + (size_t)fi * NNUE_PSQT_BKTS;
+            // PSQT weights — full Adam per-weight (only 8 buckets per row).
+            float    *pw   = psqt_weights_f32 + (size_t)fi * NNUE_PSQT_BKTS;
+            float    *gpw  = grad_psqt_w      + (size_t)fi * NNUE_PSQT_BKTS;
             uint32_t *pcnt = psqt_weights_cnt + (size_t)fi * NNUE_PSQT_BKTS;
-            float *pd = psqt_delta_f32 ? psqt_delta_f32 + (size_t)fi * NNUE_PSQT_BKTS : nullptr;
+            float    *pd   = psqt_delta_f32 ? psqt_delta_f32 + (size_t)fi * NNUE_PSQT_BKTS : nullptr;
             for (int b = 0; b < NNUE_PSQT_BKTS; b++) {
                 if (gpw[b] != 0.0f) {
-                    float dw = clamp_grad(pw[b], gpw[b]);
+                    float dw;
+                    if (use_adam && m_psqt_w && v_psqt_w) {
+                        size_t vi = (size_t)fi * NNUE_PSQT_BKTS + b;
+                        dw = do_step_psqt(gpw[b], m_psqt_w[vi], v_psqt_w[vi], pcnt[b]);
+                    } else {
+                        dw = gpw[b];
+                    }
                     pw[b] -= dw;  if (pd) pd[b] -= dw;
                     pcnt[b]++;
                     gpw[b] = 0.0f;
@@ -1854,10 +2002,10 @@ void nnue_apply_gradients()
         }
     }
 
-    // FT bias update: applied every game (biases shared across all positions).
+    // FT bias update — full Adam per-dimension.
     for (int d = 0; d < NNUE_HALF_DIMS; d++) {
         if (grad_ft_bias[d] == 0.0f) continue;
-        float dw = clamp_grad(ft_biases_f32[d], grad_ft_bias[d]);
+        float dw = do_step(grad_ft_bias[d], m_ft_bias[d], v_ft_bias[d], ft_bias_cnt[d]);
         ft_biases_f32[d] -= dw;
         ft_bias_delta[d] -= dw;
         ft_bias_cnt[d]++;
