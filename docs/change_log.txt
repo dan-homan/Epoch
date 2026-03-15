@@ -1,5 +1,24 @@
 Changes since 2017_12_24
 
+2026_03_15 -- TDLeaf Adam + per-weight LR decay (nnue.cpp, tdleaf.h).
+               nnue_apply_gradients() now supports Adam with per-weight learning-rate
+               decay as an alternative to plain gradient descent.  Controlled by
+               TDLEAF_ADAM_LR0 in tdleaf.h (set to 0.0 for plain GD; default 0.5).
+               Algorithm:
+                 lr(cnt) = LR0 / (1 + cnt / C)     (C = TDLEAF_ADAM_C = 500)
+               Fast initial learning when cnt ≈ 0; decays to near-zero as the weight
+               converges.  Uses existing per-weight cnt arrays (already persisted in
+               .tdleaf.bin), so no sidecar file is needed.  Session-local moments (v, m)
+               and step counter t_adam are reset to zero at each session start alongside
+               the v/m arrays, keeping bias correction v/(1-β²^t) always valid.
+               Layer breakdown:
+                 FC layers (FC0/FC1/FC2) and FT biases: full Adam (per-weight m and v).
+                 FT weights: RMSProp with per-row v (92 MB per-weight v ruled out;
+                   per-row v ≈ 88 KB).  No per-row m (directionally meaningless as scalar).
+                 PSQT: full Adam per-weight (only 8 buckets/row; per-weight v ≈ 1.4 MB).
+               Hyperparameters added to tdleaf.h: TDLEAF_ADAM_LR0, TDLEAF_ADAM_C,
+               TDLEAF_ADAM_BETA1, TDLEAF_ADAM_BETA2, TDLEAF_ADAM_EPS.
+
 2026_03_15 -- nnue_init_zero_weights: He-inspired weight initialisation (nnue.cpp).
                Two changes to the fresh-network init used by --init-nnue:
                (1) All FC weight means zeroed (were inherited from Stockfish 15.1
