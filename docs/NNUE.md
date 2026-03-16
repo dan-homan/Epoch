@@ -327,13 +327,21 @@ Key hyperparameters (in `src/tdleaf.h`):
 
 | Constant | Value | Notes |
 |----------|-------|-------|
-| `TDLEAF_ALPHA` | 200 | Learning rate for FC and FT layers |
-| `NNUE_FT_LR_SCALE` | 1.0 | FT accumulator LR multiplier (no extra scale needed) |
-| `NNUE_PSQT_LR_SCALE` | 10000 | PSQT LR multiplier (large: PSQT bypasses FC chain) |
-| `NNUE_FC_BIAS_LR_SCALE` | 1000 | FC bias LR multiplier (wtm_sign cancellation fix) |
-| `NNUE_FT_BIAS_LR_SCALE` | 10 | FT bias LR multiplier (shared-bias cancellation fix) |
 | `TDLEAF_LAMBDA` | 0.7 | Eligibility trace decay |
 | `TDLEAF_K` | 400 | Sigmoid temperature (cp) |
+| `TDLEAF_ALPHA` | 200 | Global gradient scale multiplier |
+| `TDLEAF_ADAM_LR0` | 0.5 | Adam initial step size for FC/FT layers (float weight units) |
+| `TDLEAF_ADAM_PSQT_LR0` | 20.0 | Adam initial step size for PSQT (int32 scale; ~1000× FC) |
+| `TDLEAF_ADAM_C` | 500 | Adam LR half-life in per-weight update counts |
+| `NNUE_FT_LR_SCALE` | 1.0 | FT gradient pre-scale (secondary with Adam active) |
+| `NNUE_PSQT_LR_SCALE` | 1000 | PSQT gradient pre-scale (secondary with Adam active) |
+| `NNUE_FC_BIAS_LR_SCALE` | 1000 | FC bias gradient pre-scale (secondary with Adam active) |
+| `NNUE_FT_BIAS_LR_SCALE` | 10 | FT bias gradient pre-scale (secondary with Adam active) |
+
+With Adam active (`TDLEAF_ADAM_LR0 > 0`), the `*_LR_SCALE` multipliers pre-scale gradients
+before Adam sees them but Adam normalises gradient magnitude — the actual per-step size in
+weight-space is governed by `TDLEAF_ADAM_LR0` / `TDLEAF_ADAM_PSQT_LR0`, not the LR_SCALE
+values.  See `docs/TDLEAF.md` for the full optimizer reference.
 
 ---
 

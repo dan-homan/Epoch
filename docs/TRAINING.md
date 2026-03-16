@@ -10,7 +10,16 @@ This documents the first complete TDLeaf(λ) training run on Leaf, carried out o
 
 The starting network, **`nn-fresh-260309.nnue`**, was created by Leaf's `--init-nnue` facility.  It is not derived from any pre-trained chess data; all weights are drawn from Gaussian distributions whose parameters (mean, σ) were measured empirically from the Stockfish 15.1 release network (`nn-ad9b42354671.nnue`).  See `docs/NNUE.md` for the per-layer distributions.
 
-PSQT weights are initialised to piece-value priors rather than random values.  The prior assigns each piece type a uniform signed value chosen so that one extra own piece of that type scores the standard centipawn equivalent: pawn = 100 cp, knight = 300 cp, bishop = 300 cp, rook = 500 cp, queen = 900 cp.  In internal NNUE units (where the score formula is `psqt_diff/2 × 100/5776`) this corresponds to values of 5,776 / 17,328 / 17,328 / 28,880 / 51,984 respectively.  Kings are set to zero.  The network therefore begins with a crude but sensible material prior for positional scoring, while the FC layers start from random noise.
+PSQT weights are initialised to piece-value priors rather than random values.  The prior
+assigns each piece type a uniform signed value chosen so that one extra own piece of that type
+scores the standard centipawn equivalent: pawn = 100 cp, knight = 300 cp, bishop = 300 cp,
+rook = 500 cp, queen = 900 cp.  Kings are set to zero.  The network therefore begins with a
+crude but sensible material prior for positional scoring, while the FC layers start from
+random noise.
+
+*(Note: this Run 1 PSQT init used uniform material values only.  The current `--init-nnue`
+initialises PSQT from the full classical piece-square tables, staged across the 8 game-phase
+buckets — a richer starting point.  See `docs/NNUE.md` for the current scheme.)*
 
 The network is a statistically plausible but chess-naïve starting point — it has the right weight magnitudes but no learned positional chess knowledge.
 
@@ -120,5 +129,10 @@ The 8000g network is above the material-only classical eval (60.5%) and dominate
 
 - Continue training beyond 8000 games to assess whether improvement continues or plateaus.
 - Run a test match against standard-chess opponents (not Fischer Random) to check transferability.
-- Investigate learning-rate tuning, particularly for PSQT, which appears to learn slowly (see `docs/TODO.md`).
-- Consider a training run starting from the SF15.1 network (`nn-ad9b42354671.nnue`) rather than a fresh initialisation, as a comparison.
+- ~~Investigate learning-rate tuning for PSQT~~ — Addressed (2026-03-15): Adam optimizer with
+  separate `TDLEAF_ADAM_PSQT_LR0=20.0` gives ~5% PSQT baseline change per 5,000 games vs ~0.3%
+  previously.  See `docs/TDLEAF.md`.
+- Consider a training run starting from the SF15.1 network (`nn-ad9b42354671.nnue`) rather than
+  a fresh initialisation, as a comparison point.
+- Run a second full training run with the improved init (classical PSQ PSQT buckets) and Adam
+  optimizer to establish a new Elo baseline curve.
